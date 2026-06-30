@@ -1,0 +1,6 @@
+data/
+logs/
+*.part
+*.tmp
+__pycache__/
+
