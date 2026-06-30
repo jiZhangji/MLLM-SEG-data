@@ -95,6 +95,10 @@ Downloads use Hugging Face's cache-aware transfer and HTTP range requests.
 Rerunning the same command resumes or skips completed files. A machine-readable
 summary is written to `download_status.json` in the output root.
 
+COCO 2014 ZIP files are fetched from the `GAIA-URJC/COCO_2014` Hugging Face
+mirror. This avoids certificate-chain failures frequently seen with the
+`images.cocodataset.org` endpoint on managed GPU servers.
+
 ## Important reproducibility notes
 
 - `PaDT-MLLM/RefCOCO`, `yiqun/referit`, and `fcxfcx/ReasonSeg` are community
@@ -114,4 +118,3 @@ summary is written to `download_status.json` in the output root.
 - Seg-Zero: <https://github.com/dvlab-research/Seg-Zero>
 - Text4Seg: <https://github.com/mc-lan/Text4Seg>
 - STAMP: <https://github.com/HKUST-LongGroup/STAMP>
-

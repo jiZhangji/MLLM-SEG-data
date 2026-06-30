@@ -22,16 +22,18 @@ from tqdm import tqdm
 
 RESOURCES = {
     "coco_train2014": {
-        "kind": "url_zip",
-        "url": "https://images.cocodataset.org/zips/train2014.zip",
+        "kind": "hf_zip",
+        "repo": "GAIA-URJC/COCO_2014",
+        "filename": "train2014.zip",
         "dest": "shared/coco",
-        "description": "MS COCO 2014 training images shared by RefCOCO variants",
+        "description": "MS COCO 2014 training images (HF mirror), shared by RefCOCO variants",
     },
     "coco_annotations2014": {
-        "kind": "url_zip",
-        "url": "https://images.cocodataset.org/annotations/annotations_trainval2014.zip",
+        "kind": "hf_zip",
+        "repo": "GAIA-URJC/COCO_2014",
+        "filename": "annotations_trainval2014.zip",
         "dest": "shared/coco",
-        "description": "MS COCO 2014 instance/caption annotations",
+        "description": "MS COCO 2014 annotations (HF mirror)",
     },
     "refcoco_family": {
         "kind": "hf_snapshot",
@@ -158,6 +160,13 @@ def download_resource(name: str, root: Path, keep_archives: bool) -> dict:
             repo_id=item["repo"], repo_type="dataset",
             filename=item["filename"], local_dir=destination,
         )
+    elif item["kind"] == "hf_zip":
+        destination.mkdir(parents=True, exist_ok=True)
+        archive = Path(hf_hub_download(
+            repo_id=item["repo"], repo_type="dataset",
+            filename=item["filename"], local_dir=destination,
+        ))
+        extract_zip(archive, destination, keep_archives)
     elif item["kind"] == "url_zip":
         destination.mkdir(parents=True, exist_ok=True)
         archive = download_url(item["url"], destination / Path(item["url"]).name)
