@@ -118,3 +118,29 @@ mirror. This avoids certificate-chain failures frequently seen with the
 - Seg-Zero: <https://github.com/dvlab-research/Seg-Zero>
 - Text4Seg: <https://github.com/mc-lan/Text4Seg>
 - STAMP: <https://github.com/HKUST-LongGroup/STAMP>
+
+## Offline R-STAMP experiment scaffold
+
+This repository also contains an offline experiment scaffold under
+`offline_rstamp/`.
+
+It is designed for servers without internet access:
+
+- check the downloaded dataset layout;
+- create a clean local experiment workspace;
+- verify whether the upstream code repositories have been copied in;
+- install the lightweight R-STAMP scaffold into a local STAMP checkout;
+- keep all commands, paths and experiment notes in one place.
+
+Start from:
+
+```bash
+cd MLLM-SEG-data
+cp offline_rstamp/paths.example.sh offline_rstamp/paths.local.sh
+# edit paths.local.sh
+bash offline_rstamp/run/00_prepare_workspace.sh
+python offline_rstamp/scripts/check_code_repos.py --code-root /path/to/workspace/code
+```
+
+The scaffold does not download models, code or data. Copy the required
+artifacts to the offline server manually.
