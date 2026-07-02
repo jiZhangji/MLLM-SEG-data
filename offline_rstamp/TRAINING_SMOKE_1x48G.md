@@ -22,6 +22,7 @@ find offline_rstamp -name "*.sh" -exec sed -i 's/\r$//' {} \;
 
 bash offline_rstamp/run/43_check_smoke_ready.sh
 bash offline_rstamp/run/40_patch_stamp_local_training.sh
+bash offline_rstamp/run/44_fix_stamp_imports.sh
 ```
 
 先跑 baseline smoke：
@@ -77,4 +78,3 @@ Please segment ...
 ```
 
 它用于快速验证“显式 structured prior 是否可能有帮助”。它不是最终的 prior-fusion 架构。
-
