@@ -77,6 +77,21 @@ raw data
 → R-STAMP structured-prior train/eval
 ```
 
+为了避免 baseline 和 R-STAMP 数据互相覆盖，当前脚本约定分开输出：
+
+```text
+code/STAMP/playground/data/json_files_debug/
+code/STAMP/playground/data/masks_debug/
+
+code/STAMP/playground/data/json_files_baseline/
+code/STAMP/playground/data/masks_baseline/
+
+code/STAMP/playground/data/json_files_rstamp/
+code/STAMP/playground/data/masks_rstamp/
+```
+
+baseline 训练时使用 `json_files_baseline` 和 `masks_baseline`；R-STAMP 训练时使用 `json_files_rstamp` 和 `masks_rstamp`。不要让两个实验读取同一个 JSON 目录。
+
 ## Baseline 与改进方法关系
 
 必须先跑官方 STAMP baseline，然后在同一份 derived data 上跑 R-STAMP 改进。
@@ -117,4 +132,3 @@ python offline_rstamp/scripts/install_rstamp_scaffold.py \
   --target-code-dir "${MLLM_SEG_ROOT}/code/R-STAMP" \
   --overwrite
 ```
-

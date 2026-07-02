@@ -6,5 +6,6 @@ TOOL_REPO="${MLLM_SEG_ROOT}/MLLM-SEG-data"
 
 python "${TOOL_REPO}/offline_rstamp/scripts/prepare_stamp_training_data.py" \
   --root "${MLLM_SEG_ROOT}" \
+  --output-json-dir "${MLLM_SEG_ROOT}/code/STAMP/playground/data/json_files_baseline" \
+  --mask-root "${MLLM_SEG_ROOT}/code/STAMP/playground/data/masks_baseline" \
   --duplicate 1
-

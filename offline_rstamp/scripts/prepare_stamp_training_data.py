@@ -251,7 +251,8 @@ def main() -> int:
     output_json_dir.mkdir(parents=True, exist_ok=True)
     mask_root.mkdir(parents=True, exist_ok=True)
 
-    # main_uni.py expects this file. Keep it empty unless dialogue data is prepared.
+    # Upstream main_uni.py expects this file name. Keep it empty unless dialogue
+    # data is prepared. Separate baseline/R-STAMP dirs each get their own copy.
     llava_placeholder = output_json_dir / "all_valid_llava_data_1000.json"
     if not llava_placeholder.exists():
         write_json(llava_placeholder, [])
@@ -285,4 +286,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
