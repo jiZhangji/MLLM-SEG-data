@@ -26,6 +26,30 @@ Python/Conda 环境               # torch/deepspeed/transformers/peft 等
 /work/MLLM-SEG-exp/models              # 模型权重
 ```
 
+当前服务器实际目录已经调整为：
+
+```text
+/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/lh/or/MLLM-SEG/
+├── code/STAMP/
+├── code/R-STAMP/
+├── data/
+├── models/
+├── outputs/
+└── logs/
+```
+
+当前 canonical data root 是：
+
+```bash
+/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/lh/or/MLLM-SEG/data
+```
+
+可用下面命令检查：
+
+```bash
+bash offline_rstamp/run/20_check_current_layout.sh
+```
+
 ## 2. 配置路径
 
 ```bash
@@ -223,4 +247,3 @@ inference time
 不要一开始就改很多东西。你的 2×80GB 资源应该用来做一个很干净的故事：
 
 > 在不牺牲 STAMP 并行 mask 速度的情况下，用短结构化 reasoning prior 提升复杂指令、OOD 和消歧能力。
-

@@ -44,6 +44,18 @@ python STAMP/data/create_refcoco_new.py
 
 ## 一次完整离线流程
 
+如果你使用当前服务器布局，请先读：
+
+```bash
+cat offline_rstamp/CURRENT_SERVER_LAYOUT.md
+```
+
+并检查：
+
+```bash
+bash offline_rstamp/run/20_check_current_layout.sh
+```
+
 ### 0. 编辑路径
 
 ```bash
@@ -160,4 +172,3 @@ STAMP baseline
 论文故事不要写成“靠更多数据/更多卡刷榜”，而是写成：
 
 > Resource-efficient reasoning enhancement for parallel MLLM segmentation.
-
