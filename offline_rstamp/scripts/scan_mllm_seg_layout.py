@@ -31,6 +31,18 @@ DEFAULT_IGNORE_DIRS = {
     ".pytest_cache",
 }
 
+DEFAULT_PRUNE_DIR_NAMES = {
+    "train2014",
+    "val2014",
+    "test2014",
+    "images",
+    "JPEGImages",
+    "masks",
+    "mask",
+    "segmentation_masks",
+    "SegmentationClass",
+}
+
 CODE_PATTERNS = [
     "run_seg_ref.py",
     "create_refcoco_new.py",
@@ -79,6 +91,13 @@ IMPORTANT_SUFFIXES = {
 
 def should_ignore(path: Path, ignore_dirs: set[str]) -> bool:
     return any(part in ignore_dirs for part in path.parts)
+
+
+def prune_dirnames(dirnames: list[str], ignore_dirs: set[str], prune_dirs: set[str]) -> None:
+    dirnames[:] = [
+        d for d in dirnames
+        if d not in ignore_dirs and d not in prune_dirs
+    ]
 
 
 def safe_iterdir(path: Path) -> Iterable[Path]:
@@ -137,14 +156,20 @@ def tree_summary(root: Path, max_depth: int, max_entries_per_dir: int, ignore_di
     return lines
 
 
-def find_by_names(root: Path, names: list[str], ignore_dirs: set[str], max_results: int) -> dict[str, list[dict]]:
+def find_by_names(
+    root: Path,
+    names: list[str],
+    ignore_dirs: set[str],
+    prune_dirs: set[str],
+    max_results: int,
+) -> dict[str, list[dict]]:
     out = {name: [] for name in names}
     exact_names = [name for name in names if "*" not in name]
     wildcard_names = [name for name in names if "*" in name]
 
     for dirpath, dirnames, filenames in os.walk(root):
         current = Path(dirpath)
-        dirnames[:] = [d for d in dirnames if d not in ignore_dirs]
+        prune_dirnames(dirnames, ignore_dirs, prune_dirs)
         if should_ignore(current, ignore_dirs):
             continue
         for filename in filenames:
@@ -157,12 +182,12 @@ def find_by_names(root: Path, names: list[str], ignore_dirs: set[str], max_resul
     return out
 
 
-def find_data_dirs(root: Path, ignore_dirs: set[str], max_results: int) -> list[dict]:
+def find_data_dirs(root: Path, ignore_dirs: set[str], prune_dirs: set[str], max_results: int) -> list[dict]:
     results: list[dict] = []
     seen: set[str] = set()
     for dirpath, dirnames, _filenames in os.walk(root):
         current = Path(dirpath)
-        dirnames[:] = [d for d in dirnames if d not in ignore_dirs]
+        prune_dirnames(dirnames, ignore_dirs, prune_dirs)
         if should_ignore(current, ignore_dirs):
             continue
         low = current.name.lower()
@@ -194,12 +219,12 @@ def find_data_dirs(root: Path, ignore_dirs: set[str], max_results: int) -> list[
     return results
 
 
-def count_files_by_suffix(root: Path, ignore_dirs: set[str], max_walk_files: int) -> dict:
+def count_files_by_suffix(root: Path, ignore_dirs: set[str], prune_dirs: set[str], max_walk_files: int) -> dict:
     counts: dict[str, int] = {}
     total = 0
     for dirpath, dirnames, filenames in os.walk(root):
         current = Path(dirpath)
-        dirnames[:] = [d for d in dirnames if d not in ignore_dirs]
+        prune_dirnames(dirnames, ignore_dirs, prune_dirs)
         if should_ignore(current, ignore_dirs):
             continue
         for filename in filenames:
@@ -211,11 +236,11 @@ def count_files_by_suffix(root: Path, ignore_dirs: set[str], max_walk_files: int
     return {"total_seen": total, "truncated": False, "suffix_counts": counts}
 
 
-def find_important_files(root: Path, ignore_dirs: set[str], max_results: int) -> list[dict]:
+def find_important_files(root: Path, ignore_dirs: set[str], prune_dirs: set[str], max_results: int) -> list[dict]:
     results: list[dict] = []
     for dirpath, dirnames, filenames in os.walk(root):
         current = Path(dirpath)
-        dirnames[:] = [d for d in dirnames if d not in ignore_dirs]
+        prune_dirnames(dirnames, ignore_dirs, prune_dirs)
         if should_ignore(current, ignore_dirs):
             continue
         for filename in filenames:
@@ -291,19 +316,35 @@ def main() -> int:
     parser.add_argument("--max-important-files", type=int, default=500)
     parser.add_argument("--max-walk-files", type=int, default=200000)
     parser.add_argument("--include-cache", action="store_true")
+    parser.add_argument(
+        "--include-image-dirs",
+        action="store_true",
+        help="Do not prune common image/mask directories such as train2014, images and masks.",
+    )
+    parser.add_argument(
+        "--skip-suffix-counts",
+        action="store_true",
+        help="Skip file suffix counting, useful for very large image datasets.",
+    )
     args = parser.parse_args()
 
     root = args.root.expanduser().resolve()
     ignore_dirs = set() if args.include_cache else set(DEFAULT_IGNORE_DIRS)
+    prune_dirs = set() if args.include_image_dirs else set(DEFAULT_PRUNE_DIR_NAMES)
 
     report = {
         "script": "offline_rstamp/scripts/scan_mllm_seg_layout.py",
         "root": str(root),
         "tree": tree_summary(root, args.max_depth, args.max_entries_per_dir, ignore_dirs),
-        "code_files": find_by_names(root, CODE_PATTERNS, ignore_dirs, args.max_results),
-        "data_dirs": find_data_dirs(root, ignore_dirs, args.max_results),
-        "suffix_counts": count_files_by_suffix(root, ignore_dirs, args.max_walk_files),
-        "important_files": find_important_files(root, ignore_dirs, args.max_important_files),
+        "pruned_dir_names": sorted(prune_dirs),
+        "code_files": find_by_names(root, CODE_PATTERNS, ignore_dirs, prune_dirs, args.max_results),
+        "data_dirs": find_data_dirs(root, ignore_dirs, prune_dirs, args.max_results),
+        "suffix_counts": (
+            {"skipped": True}
+            if args.skip_suffix_counts
+            else count_files_by_suffix(root, ignore_dirs, prune_dirs, args.max_walk_files)
+        ),
+        "important_files": find_important_files(root, ignore_dirs, prune_dirs, args.max_important_files),
     }
 
     markdown = render_markdown(report)
@@ -324,4 +365,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
