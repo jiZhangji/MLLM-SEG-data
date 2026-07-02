@@ -40,9 +40,14 @@ def patch_imports(text: str) -> str:
 
 
 def patch_flash_attention(text: str) -> str:
-    old = 'attn_implementation="flash_attention_2",'
-    new = 'attn_implementation=os.environ.get("STAMP_ATTN_IMPL", "sdpa"),'
-    return text.replace(old, new)
+    # Be aggressive: different STAMP snapshots may use single quotes, double
+    # quotes, or may already have been partly patched. The local smoke run must
+    # not require flash-attn.
+    text = text.replace('attn_implementation="flash_attention_2",', 'attn_implementation=os.environ.get("STAMP_ATTN_IMPL", "sdpa"),')
+    text = text.replace("attn_implementation='flash_attention_2',", 'attn_implementation=os.environ.get("STAMP_ATTN_IMPL", "sdpa"),')
+    text = text.replace('"flash_attention_2"', 'os.environ.get("STAMP_ATTN_IMPL", "sdpa")')
+    text = text.replace("'flash_attention_2'", 'os.environ.get("STAMP_ATTN_IMPL", "sdpa")')
+    return text
 
 
 def patch_dataset_function(text: str) -> str:
@@ -210,4 +215,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

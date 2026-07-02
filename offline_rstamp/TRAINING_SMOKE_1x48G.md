@@ -23,6 +23,7 @@ find offline_rstamp -name "*.sh" -exec sed -i 's/\r$//' {} \;
 bash offline_rstamp/run/43_check_smoke_ready.sh
 bash offline_rstamp/run/40_patch_stamp_local_training.sh
 bash offline_rstamp/run/44_fix_stamp_imports.sh
+bash offline_rstamp/run/45_force_disable_flash_attn.sh
 ```
 
 先跑 baseline smoke：
