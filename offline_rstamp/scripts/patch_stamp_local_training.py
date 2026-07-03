@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 
 
 MARKER = "# ---- R-STAMP local training patch ----"
@@ -209,6 +210,40 @@ def patch_lora(text: str) -> str:
     return text
 
 
+def patch_entrypoint_model_and_output(text: str) -> str:
+    """Make the script bottom use MODEL_NAME and OUT_DIR env vars.
+
+    Upstream snapshots often ignore CLI args and instantiate QwenVLSFTTrainer
+    with hard-coded paths at module bottom. This causes baseline and R-STAMP
+    smoke runs to overwrite the same `output/qwen_vl_seg_sft/uni` directory.
+    """
+    if 'os.environ.get("MODEL_NAME"' in text and 'os.environ.get("OUT_DIR"' in text:
+        return text
+
+    pattern = re.compile(
+        r"trainer\s*=\s*QwenVLSFTTrainer\(\s*"
+        r"model_name\s*=\s*['\"][^'\"]+['\"]\s*,\s*"
+        r"output_dir\s*=\s*['\"][^'\"]+['\"]\s*,?\s*"
+        r"\)",
+        flags=re.S,
+    )
+    replacement = (
+        "trainer = QwenVLSFTTrainer(\n"
+        "    model_name=os.environ.get(\"MODEL_NAME\", \"Qwen/Qwen2-VL-2B-Instruct\"),\n"
+        "    output_dir=os.environ.get(\"OUT_DIR\", \"output/qwen_vl_seg_sft/uni\"),\n"
+        ")"
+    )
+    text, n = pattern.subn(replacement, text, count=1)
+    if n == 0:
+        # Fallback for unusual formatting: leave a clear hint in the file tail.
+        text += (
+            "\n# R-STAMP patch warning: could not automatically replace the hard-coded\n"
+            "# QwenVLSFTTrainer entrypoint. Please manually ensure MODEL_NAME and OUT_DIR\n"
+            "# environment variables are used at the script bottom.\n"
+        )
+    return text
+
+
 def patch_file(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     backup = path.with_suffix(path.suffix + ".bak_rstamp_local")
@@ -222,6 +257,7 @@ def patch_file(path: Path) -> None:
     text = patch_dataset_function(text)
     text = patch_training_args(text)
     text = patch_lora(text)
+    text = patch_entrypoint_model_and_output(text)
 
     path.write_text(text, encoding="utf-8")
     print(f"Patched: {path}")
