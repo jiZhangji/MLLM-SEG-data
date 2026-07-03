@@ -317,6 +317,8 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--min-pixels", type=int, default=50176)
     parser.add_argument("--max-pixels", type=int, default=200704)
+    parser.add_argument("--baseline-use-prior", action="store_true")
+    parser.add_argument("--rstamp-use-prior", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
     root = args.root.expanduser().resolve()
@@ -348,7 +350,7 @@ def main() -> int:
         json_path=baseline_json,
         root=root,
         stamp_code_dir=stamp_code_dir,
-        use_prior=False,
+        use_prior=args.baseline_use_prior,
         limit=args.limit,
         min_pixels=args.min_pixels,
         max_pixels=args.max_pixels,
@@ -359,7 +361,7 @@ def main() -> int:
         json_path=rstamp_json,
         root=root,
         stamp_code_dir=stamp_code_dir,
-        use_prior=True,
+        use_prior=args.rstamp_use_prior,
         limit=args.limit,
         min_pixels=args.min_pixels,
         max_pixels=args.max_pixels,
@@ -382,6 +384,14 @@ def main() -> int:
     report = {
         "root": str(root),
         "limit": args.limit,
+        "settings": {
+            "baseline_use_prior": args.baseline_use_prior,
+            "rstamp_use_prior": args.rstamp_use_prior,
+            "baseline_model": str(baseline_model),
+            "rstamp_model": str(rstamp_model),
+            "baseline_json": str(baseline_json),
+            "rstamp_json": str(rstamp_json),
+        },
         "summary": {
             "baseline": baseline_summary,
             "rstamp": rstamp_summary,
