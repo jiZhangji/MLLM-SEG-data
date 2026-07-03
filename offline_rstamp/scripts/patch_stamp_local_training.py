@@ -39,6 +39,21 @@ def patch_imports(text: str) -> str:
     return text
 
 
+def patch_cudnn_control(text: str) -> str:
+    marker = "STAMP_DISABLE_CUDNN"
+    if marker in text:
+        return text
+    needle = "IS_MAIN_PROCESS = os.environ.get(\"LOCAL_RANK\", \"-1\") in [\"-1\", \"0\"]\n"
+    insert = (
+        "IS_MAIN_PROCESS = os.environ.get(\"LOCAL_RANK\", \"-1\") in [\"-1\", \"0\"]\n"
+        "if os.environ.get(\"STAMP_DISABLE_CUDNN\", \"0\") == \"1\":\n"
+        "    torch.backends.cudnn.enabled = False\n"
+        "    if IS_MAIN_PROCESS:\n"
+        "        print(\"--- Disabled cuDNN for local smoke training ---\")\n"
+    )
+    return text.replace(needle, insert, 1)
+
+
 def patch_flash_attention(text: str) -> str:
     # Be aggressive: different STAMP snapshots may use single quotes, double
     # quotes, or may already have been partly patched. The local smoke run must
@@ -158,6 +173,15 @@ def patch_dataset_function(text: str) -> str:
     return text
 
 
+def patch_processor_pixels(text: str) -> str:
+    text = text.replace(
+        "        min_pixels = 1024 * 28 * 28\n        max_pixels = 1280 * 28 * 28\n",
+        "        min_pixels = int(os.environ.get(\"STAMP_MIN_PIXELS\", str(256 * 28 * 28)))\n"
+        "        max_pixels = int(os.environ.get(\"STAMP_MAX_PIXELS\", str(512 * 28 * 28)))\n",
+    )
+    return text
+
+
 def patch_training_args(text: str) -> str:
     replacements = {
         "num_train_epochs=2,": 'num_train_epochs=float(os.environ.get("STAMP_NUM_EPOCHS", "1")),',
@@ -192,7 +216,9 @@ def patch_file(path: Path) -> None:
         backup.write_text(text, encoding="utf-8")
 
     text = patch_imports(text)
+    text = patch_cudnn_control(text)
     text = patch_flash_attention(text)
+    text = patch_processor_pixels(text)
     text = patch_dataset_function(text)
     text = patch_training_args(text)
     text = patch_lora(text)

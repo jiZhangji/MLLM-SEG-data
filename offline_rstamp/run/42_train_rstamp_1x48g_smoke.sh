@@ -18,6 +18,9 @@ export TOKENIZERS_PARALLELISM=false
 export WANDB_DISABLED=true
 
 export STAMP_ATTN_IMPL="${STAMP_ATTN_IMPL:-sdpa}"
+export STAMP_DISABLE_CUDNN="${STAMP_DISABLE_CUDNN:-1}"
+export STAMP_MIN_PIXELS="${STAMP_MIN_PIXELS:-50176}"
+export STAMP_MAX_PIXELS="${STAMP_MAX_PIXELS:-200704}"
 export STAMP_JSON_DIR="${STAMP_JSON_DIR:-${STAMP_CODE_DIR}/playground/data/json_files_rstamp}"
 export STAMP_USE_STRUCTURED_PRIOR=1
 export STAMP_MAX_SAMPLES="${STAMP_MAX_SAMPLES:-1000}"
@@ -47,4 +50,3 @@ echo "STAMP_MAX_SAMPLES=${STAMP_MAX_SAMPLES}"
 python -m train.main_uni \
   --model_name "${MODEL_NAME}" \
   --output_dir "${OUT_DIR}"
-
