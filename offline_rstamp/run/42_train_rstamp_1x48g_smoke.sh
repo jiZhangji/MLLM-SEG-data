@@ -36,8 +36,8 @@ export STAMP_MAX_LENGTH="${STAMP_MAX_LENGTH:-2048}"
 export STAMP_SAVE_STEPS="${STAMP_SAVE_STEPS:-200}"
 export STAMP_REPORT_TO="${STAMP_REPORT_TO:-none}"
 
-MODEL_NAME="${MODEL_NAME:-${MODEL_ROOT}/STAMP-2B-uni}"
-OUT_DIR="${OUT_DIR:-${OUTPUT_ROOT}/smoke_rstamp_1x48g}"
+export MODEL_NAME="${MODEL_NAME:-${MODEL_ROOT}/STAMP-2B-uni}"
+export OUT_DIR="${OUT_DIR:-${OUTPUT_ROOT}/smoke_rstamp_1x48g}"
 
 mkdir -p "${OUT_DIR}"
 
