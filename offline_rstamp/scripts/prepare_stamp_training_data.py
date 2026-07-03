@@ -64,10 +64,7 @@ def load_jsonl(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
     return items
 
 
-def extract_query(sample: dict[str, Any]) -> str:
-    objects = sample.get("objects") or []
-    if objects and objects[0].get("label"):
-        return str(objects[0]["label"]).strip()
+def extract_expression(sample: dict[str, Any]) -> str:
     conversations = sample.get("conversations") or []
     if conversations:
         text = str(conversations[0].get("value", ""))
@@ -76,6 +73,13 @@ def extract_query(sample: dict[str, Any]) -> str:
             return match.group(1).strip()
         return text.strip()
     return ""
+
+
+def extract_query(sample: dict[str, Any]) -> str:
+    objects = sample.get("objects") or []
+    if objects and objects[0].get("label"):
+        return str(objects[0]["label"]).strip()
+    return extract_expression(sample)
 
 
 def decode_rle_to_mask(rle: dict[str, Any]) -> np.ndarray:
@@ -91,7 +95,7 @@ def decode_rle_to_mask(rle: dict[str, Any]) -> np.ndarray:
     return mask
 
 
-def format_prior(query: str, obj: dict[str, Any]) -> str:
+def format_oracle_prior(query: str, obj: dict[str, Any]) -> str:
     bbox = obj.get("bbox")
     parts = [f"<TARGET> {query} </TARGET>"]
     if bbox and len(bbox) >= 4:
@@ -101,6 +105,18 @@ def format_prior(query: str, obj: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def format_text_only_prior(sample: dict[str, Any], query: str) -> str:
+    """Build a fair prior using only the original referring expression text.
+
+    This intentionally avoids GT bbox, GT center, GT mask and object instance
+    geometry. It is a conservative first fair-test prior: it simply exposes the
+    referring expression in a structured field so we can check whether format
+    and target-text structure help without oracle localization.
+    """
+    expression = extract_expression(sample) or query
+    return f"<TARGET> {expression} </TARGET>"
+
+
 def make_stamp_item(
     sample: dict[str, Any],
     image_root: Path,
@@ -108,6 +124,7 @@ def make_stamp_item(
     dataset_name: str,
     item_index: int,
     include_prior: bool,
+    prior_mode: str,
 ) -> dict[str, Any] | None:
     objects = sample.get("objects") or []
     if not objects:
@@ -161,13 +178,32 @@ def make_stamp_item(
         "bbox": obj.get("bbox"),
     }
     if include_prior:
+        if prior_mode == "oracle":
+            prior_text = format_oracle_prior(query, obj)
+            prior: dict[str, Any] = {
+                "mode": "oracle",
+                "target": query,
+                "bbox": obj.get("bbox"),
+                "positive_points": [],
+                "negative_points": [],
+                "uses_gt_geometry": True,
+            }
+        elif prior_mode == "text_only":
+            prior_text = format_text_only_prior(sample, query)
+            prior = {
+                "mode": "text_only",
+                "target": extract_expression(sample) or query,
+                "bbox": None,
+                "positive_points": [],
+                "negative_points": [],
+                "uses_gt_geometry": False,
+            }
+        else:
+            raise ValueError(f"Unsupported prior_mode: {prior_mode}")
         item["structured_prior"] = {
-            "target": query,
-            "bbox": obj.get("bbox"),
-            "positive_points": [],
-            "negative_points": [],
+            **prior,
         }
-        item["structured_prior_text"] = format_prior(query, obj)
+        item["structured_prior_text"] = prior_text
     return item
 
 
@@ -184,6 +220,7 @@ def convert_dataset(
     mask_root: Path,
     output_json_dir: Path,
     include_prior: bool,
+    prior_mode: str,
     limit: int | None,
     duplicate: int,
 ) -> dict[str, Any]:
@@ -200,6 +237,7 @@ def convert_dataset(
                 dataset_name=dataset_name.replace("+", "plus"),
                 item_index=dup_idx * len(raw_items) + idx,
                 include_prior=include_prior,
+                prior_mode=prior_mode,
             )
             if item is None:
                 skipped += 1
@@ -230,6 +268,12 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=None, help="Debug limit per dataset.")
     parser.add_argument("--duplicate", type=int, default=1, help="Duplicate each dataset N times. Use 1 for clean baseline.")
     parser.add_argument("--include-prior", action="store_true", help="Add R-STAMP structured_prior fields.")
+    parser.add_argument(
+        "--prior-mode",
+        choices=["oracle", "text_only"],
+        default="oracle",
+        help="oracle uses GT bbox/center; text_only uses only the referring expression text.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -270,12 +314,17 @@ def main() -> int:
                 mask_root=mask_root,
                 output_json_dir=output_json_dir,
                 include_prior=args.include_prior,
+                prior_mode=args.prior_mode,
                 limit=args.limit,
                 duplicate=args.duplicate,
             )
         )
 
-    summary_path = output_json_dir / ("prepare_summary_with_prior.json" if args.include_prior else "prepare_summary_baseline.json")
+    if args.include_prior:
+        summary_name = f"prepare_summary_with_{args.prior_mode}_prior.json"
+    else:
+        summary_name = "prepare_summary_baseline.json"
+    summary_path = output_json_dir / summary_name
     write_json(summary_path, summaries)
     print(json.dumps(summaries, indent=2, ensure_ascii=False))
     print(f"Summary written to: {summary_path}")
