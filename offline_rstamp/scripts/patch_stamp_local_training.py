@@ -220,28 +220,49 @@ def patch_entrypoint_model_and_output(text: str) -> str:
     if 'os.environ.get("MODEL_NAME"' in text and 'os.environ.get("OUT_DIR"' in text:
         return text
 
-    pattern = re.compile(
-        r"trainer\s*=\s*QwenVLSFTTrainer\(\s*"
-        r"model_name\s*=\s*['\"][^'\"]+['\"]\s*,\s*"
-        r"output_dir\s*=\s*['\"][^'\"]+['\"]\s*,?\s*"
-        r"\)",
-        flags=re.S,
-    )
     replacement = (
         "trainer = QwenVLSFTTrainer(\n"
         "    model_name=os.environ.get(\"MODEL_NAME\", \"Qwen/Qwen2-VL-2B-Instruct\"),\n"
         "    output_dir=os.environ.get(\"OUT_DIR\", \"output/qwen_vl_seg_sft/uni\"),\n"
         ")"
     )
-    text, n = pattern.subn(replacement, text, count=1)
-    if n == 0:
-        # Fallback for unusual formatting: leave a clear hint in the file tail.
+
+    # First try a broad regex for common formatting.
+    pattern = re.compile(r"trainer\s*=\s*QwenVLSFTTrainer\((?:.|\n)*?\)\s*\n\s*trainer\.train\(\)", flags=re.S)
+    new_text, n = pattern.subn(replacement + "\n    trainer.train()", text, count=1)
+    if n:
+        return new_text
+
+    # Robust fallback: find the last textual occurrence and replace the balanced
+    # call expression, regardless of the argument names/formatting.
+    anchor = "trainer = QwenVLSFTTrainer("
+    start = text.rfind(anchor)
+    if start == -1:
         text += (
-            "\n# R-STAMP patch warning: could not automatically replace the hard-coded\n"
-            "# QwenVLSFTTrainer entrypoint. Please manually ensure MODEL_NAME and OUT_DIR\n"
-            "# environment variables are used at the script bottom.\n"
+            "\n# R-STAMP patch warning: could not find QwenVLSFTTrainer entrypoint.\n"
+            "# Please manually ensure MODEL_NAME and OUT_DIR environment variables are used.\n"
         )
-    return text
+        return text
+
+    open_paren = text.find("(", start)
+    depth = 0
+    end = None
+    for idx in range(open_paren, len(text)):
+        ch = text[idx]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                end = idx + 1
+                break
+    if end is None:
+        text += (
+            "\n# R-STAMP patch warning: could not parse QwenVLSFTTrainer entrypoint parentheses.\n"
+        )
+        return text
+
+    return text[:start] + replacement + text[end:]
 
 
 def patch_file(path: Path) -> None:
