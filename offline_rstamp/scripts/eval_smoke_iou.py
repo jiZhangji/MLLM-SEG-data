@@ -242,15 +242,24 @@ def summarize(rows: list[EvalRow]) -> dict[str, Any]:
     ious = np.array([r.iou for r in rows], dtype=np.float64)
     no_mask = np.array([not r.pred_found for r in rows], dtype=np.float64)
     empty = np.array([r.pred_nonzero == 0 for r in rows], dtype=np.float64)
+    total_intersection = int(sum(r.intersection for r in rows))
+    total_union = int(sum(r.union for r in rows))
+    ciou = float(total_intersection / total_union) if total_union > 0 else None
+    valid_ious = np.array([r.iou for r in rows if r.pred_found and r.pred_nonzero > 0], dtype=np.float64)
     return {
         "num_samples": len(rows),
         "mean_iou": float(ious.mean()),
+        "gIoU": float(ious.mean()),
+        "cIoU": ciou,
         "median_iou": float(np.median(ious)),
         "iou_25": float(np.quantile(ious, 0.25)),
         "iou_75": float(np.quantile(ious, 0.75)),
+        "valid_mask_mean_iou": float(valid_ious.mean()) if len(valid_ious) else None,
         "no_mask_rate": float(no_mask.mean()),
         "empty_pred_rate": float(empty.mean()),
         "iou_ge_0_5_rate": float((ious >= 0.5).mean()),
+        "total_intersection": total_intersection,
+        "total_union": total_union,
     }
 
 
@@ -284,7 +293,10 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
         "| Metric | Baseline | R-STAMP | Delta (R-B) |",
         "|---|---:|---:|---:|",
         f"| mean_iou | {fmt(b.get('mean_iou'))} | {fmt(r.get('mean_iou'))} | {fmt(c.get('mean_iou_delta'))} |",
+        f"| gIoU | {fmt(b.get('gIoU'))} | {fmt(r.get('gIoU'))} | {fmt(c.get('gIoU_delta'))} |",
+        f"| cIoU | {fmt(b.get('cIoU'))} | {fmt(r.get('cIoU'))} | {fmt(c.get('cIoU_delta'))} |",
         f"| median_iou | {fmt(b.get('median_iou'))} | {fmt(r.get('median_iou'))} | {fmt(c.get('median_iou_delta'))} |",
+        f"| valid_mask_mean_iou | {fmt(b.get('valid_mask_mean_iou'))} | {fmt(r.get('valid_mask_mean_iou'))} | {fmt(c.get('valid_mask_mean_iou_delta'))} |",
         f"| iou_ge_0_5_rate | {fmt(b.get('iou_ge_0_5_rate'))} | {fmt(r.get('iou_ge_0_5_rate'))} | {fmt(c.get('iou_ge_0_5_rate_delta'))} |",
         f"| no_mask_rate | {fmt(b.get('no_mask_rate'))} | {fmt(r.get('no_mask_rate'))} | {fmt(c.get('no_mask_rate_delta'))} |",
         f"| empty_pred_rate | {fmt(b.get('empty_pred_rate'))} | {fmt(r.get('empty_pred_rate'))} | {fmt(c.get('empty_pred_rate_delta'))} |",
@@ -370,7 +382,16 @@ def main() -> int:
     baseline_summary = summarize(baseline_rows)
     rstamp_summary = summarize(rstamp_rows)
     comparison = {}
-    for key in ["mean_iou", "median_iou", "iou_ge_0_5_rate", "no_mask_rate", "empty_pred_rate"]:
+    for key in [
+        "mean_iou",
+        "gIoU",
+        "cIoU",
+        "median_iou",
+        "valid_mask_mean_iou",
+        "iou_ge_0_5_rate",
+        "no_mask_rate",
+        "empty_pred_rate",
+    ]:
         if baseline_summary.get(key) is not None and rstamp_summary.get(key) is not None:
             comparison[f"{key}_delta"] = rstamp_summary[key] - baseline_summary[key]
 
