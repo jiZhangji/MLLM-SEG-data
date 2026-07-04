@@ -90,8 +90,44 @@ def extract_text_from_messages(item: dict[str, Any]) -> str:
     return str(content)
 
 
-def build_query(item: dict[str, Any], use_prior: bool) -> str:
-    query = extract_text_from_messages(item).strip()
+def load_official_question_templates(stamp_code_dir: Path) -> list[str]:
+    setup_stamp_imports(stamp_code_dir)
+    try:
+        from data.question_answer_list import QUESTION_PARTIAL  # type: ignore
+        templates = [str(x) for x in QUESTION_PARTIAL if "[class_name]" in str(x)]
+        if templates:
+            return templates
+    except Exception:
+        pass
+    return ['Please segment the [class_name] in this image.']
+
+
+def extract_target_text(item: dict[str, Any]) -> str:
+    label = str(item.get("label") or "").strip()
+    if label:
+        return label
+    text = extract_text_from_messages(item).strip()
+    match = None
+    import re
+    for pattern in [
+        r'Please segment the object this sentence describes:\s*"([^"]+)"',
+        r'The "([^"]+)" refers to',
+        r'"([^"]+)"',
+    ]:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return text
+
+
+def build_query(item: dict[str, Any], use_prior: bool, prompt_mode: str, official_templates: list[str]) -> str:
+    if prompt_mode == "official":
+        target = extract_target_text(item)
+        query = official_templates[0].replace("[class_name]", target).strip()
+    elif prompt_mode == "target_only":
+        query = extract_target_text(item)
+    else:
+        query = extract_text_from_messages(item).strip()
     prior = str(item.get("structured_prior_text") or "").strip()
     if use_prior and prior and prior not in query:
         return f"{prior}\n\nUser request: {query}"
@@ -169,8 +205,10 @@ def evaluate_run(
     limit: int,
     min_pixels: int,
     max_pixels: int,
+    prompt_mode: str,
 ) -> list[EvalRow]:
     GenerativeSegmenter = load_segmenter_class(stamp_code_dir)
+    official_templates = load_official_question_templates(stamp_code_dir)
     items = load_items(json_path, limit)
 
     print(f"\n=== Evaluating {run_name} ===")
@@ -178,6 +216,9 @@ def evaluate_run(
     print(f"json_path={json_path}")
     print(f"samples={len(items)}")
     print(f"use_prior={use_prior}")
+    print(f"prompt_mode={prompt_mode}")
+    print(f"min_pixels={min_pixels}")
+    print(f"max_pixels={max_pixels}")
 
     segmenter = GenerativeSegmenter(
         str(model_path),
@@ -193,7 +234,7 @@ def evaluate_run(
         image = Image.open(image_path).convert("RGB")
         gt = binary_mask_from_file(mask_path)
         height, width = gt.shape[-2:]
-        query = build_query(item, use_prior=use_prior)
+        query = build_query(item, use_prior=use_prior, prompt_mode=prompt_mode, official_templates=official_templates)
 
         pred_found = False
         pred = torch.zeros((height, width), dtype=torch.uint8)
@@ -329,6 +370,12 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--min-pixels", type=int, default=50176)
     parser.add_argument("--max-pixels", type=int, default=200704)
+    parser.add_argument(
+        "--prompt-mode",
+        choices=["prepared", "official", "target_only"],
+        default="prepared",
+        help="prepared uses JSON message text; official uses STAMP QUESTION_PARTIAL; target_only sends only label/expression.",
+    )
     parser.add_argument("--baseline-use-prior", action="store_true")
     parser.add_argument("--rstamp-use-prior", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
@@ -366,6 +413,7 @@ def main() -> int:
         limit=args.limit,
         min_pixels=args.min_pixels,
         max_pixels=args.max_pixels,
+        prompt_mode=args.prompt_mode,
     )
     rstamp_rows = evaluate_run(
         run_name="rstamp",
@@ -377,6 +425,7 @@ def main() -> int:
         limit=args.limit,
         min_pixels=args.min_pixels,
         max_pixels=args.max_pixels,
+        prompt_mode=args.prompt_mode,
     )
 
     baseline_summary = summarize(baseline_rows)
@@ -412,6 +461,9 @@ def main() -> int:
             "rstamp_model": str(rstamp_model),
             "baseline_json": str(baseline_json),
             "rstamp_json": str(rstamp_json),
+            "prompt_mode": args.prompt_mode,
+            "min_pixels": args.min_pixels,
+            "max_pixels": args.max_pixels,
         },
         "summary": {
             "baseline": baseline_summary,

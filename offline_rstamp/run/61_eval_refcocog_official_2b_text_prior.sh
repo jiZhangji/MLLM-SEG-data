@@ -21,6 +21,9 @@ export TOKENIZERS_PARALLELISM=false
 export WANDB_DISABLED=true
 export STAMP_ATTN_IMPL="${STAMP_ATTN_IMPL:-sdpa}"
 export STAMP_DISABLE_CUDNN="${STAMP_DISABLE_CUDNN:-1}"
+export STAMP_MIN_PIXELS="${STAMP_MIN_PIXELS:-802816}"
+export STAMP_MAX_PIXELS="${STAMP_MAX_PIXELS:-1003520}"
+export STAMP_PROMPT_MODE="${STAMP_PROMPT_MODE:-official}"
 
 cd "${STAMP_CODE_DIR}"
 
@@ -34,7 +37,10 @@ for SPLIT in refcocog_val refcocog_test; do
     --baseline-json "${STAMP_DATA}/json_eval_baseline/${SPLIT}.json" \
     --rstamp-json "${STAMP_DATA}/json_eval_text_prior/${SPLIT}.json" \
     --output-dir "${MLLM_SEG_ROOT}/outputs/eval_refcocog_official_2b_text_prior/${SPLIT}" \
-    --limit "${EVAL_LIMIT}"
+    --limit "${EVAL_LIMIT}" \
+    --min-pixels "${STAMP_MIN_PIXELS}" \
+    --max-pixels "${STAMP_MAX_PIXELS}" \
+    --prompt-mode "${STAMP_PROMPT_MODE}"
 done
 
 echo "Reports:"
