@@ -140,6 +140,10 @@ def normalize_refinement_outputs(outputs: Any) -> dict[str, Any]:
     mask_logits = outputs["mask_logits"].detach().float().cpu()
     mask_hidden = outputs["mask_hidden"].detach().float().cpu()
     grid_hw = tuple(int(x) for x in outputs["grid_hw"])
+    if mask_logits.ndim == 4 and mask_logits.shape[-2] == 1 and mask_logits.shape[-1] == 2:
+        mask_logits = mask_logits.squeeze(-2)
+    if mask_hidden.ndim == 4 and mask_hidden.shape[-2] == 1:
+        mask_hidden = mask_hidden.squeeze(-2)
     if mask_logits.ndim != 3 or mask_logits.shape[-1] != 2:
         raise ValueError(f"mask_logits must be [B, N, 2], got {tuple(mask_logits.shape)}")
     if mask_hidden.ndim != 3:
@@ -277,7 +281,7 @@ def main() -> int:
     if report["num_exported"] == 0:
         print("")
         print("No refinement dumps were exported.")
-        print("Most likely STAMP GenerativeSegmenter does not yet expose Phase-2 tensors.")
+        print("Most likely STAMP Phase-2 export still needs a small compatibility fix.")
         print("Run this inspection helper on the server and send the generated source snippets back:")
         print("")
         print("  bash offline_rstamp/run/77_inspect_stamp_refinement_points.sh")

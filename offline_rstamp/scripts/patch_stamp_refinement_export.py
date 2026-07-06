@@ -27,6 +27,7 @@ from pathlib import Path
 
 
 PATCH_MARKER = "# >>> Refine-STAMP Phase-2 export patch"
+PATCH_END_MARKER = "# <<< Refine-STAMP Phase-2 export patch"
 
 
 PATCH_CODE = r'''
@@ -103,6 +104,8 @@ def _refine_stamp_generate_with_refinement_outputs(self, image: Image.Image, pro
     )
 
     binary_logits = seg_forward_outputs.bi_logits[:, -num_patches:]
+    if binary_logits.ndim == 3 and binary_logits.shape[-1] == 1:
+        binary_logits = binary_logits.squeeze(-1)
     mask_logits = torch.stack([-binary_logits, binary_logits], dim=-1)
 
     hidden_states = getattr(seg_forward_outputs, "hidden_states", None)
@@ -157,7 +160,14 @@ def main() -> int:
             continue
         text = path.read_text(encoding="utf-8")
         if PATCH_MARKER in text:
-            print(f"[OK] already patched: {path}")
+            start = text.index(PATCH_MARKER)
+            end = text.find(PATCH_END_MARKER, start)
+            if end == -1:
+                raise SystemExit(f"Found patch start but not end marker in {path}")
+            end += len(PATCH_END_MARKER)
+            text = text[:start].rstrip() + PATCH_CODE + text[end:].lstrip("\n")
+            path.write_text(text.rstrip() + "\n", encoding="utf-8")
+            print(f"[OK] refreshed existing patch: {path}")
             patched.append(str(path))
             continue
         path.write_text(text.rstrip() + PATCH_CODE + "\n", encoding="utf-8")
