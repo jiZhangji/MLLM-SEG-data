@@ -111,7 +111,9 @@ def evaluate(args: argparse.Namespace) -> dict:
     selector_name = args.selector or ckpt.get("selector") or ckpt["config"].get("selector", "hybrid")
     top_k = args.top_k or int(ckpt["config"].get("top_k", 64))
 
-    if args.use_checkpoint_val and ckpt.get("val_paths"):
+    if args.eval_all:
+        paths = find_dump_paths(args.input_dir, args.limit)
+    elif args.use_checkpoint_val and ckpt.get("val_paths"):
         paths = [Path(p) for p in ckpt["val_paths"]]
     else:
         all_paths = find_dump_paths(args.input_dir, args.limit)
@@ -212,6 +214,7 @@ def main() -> int:
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--use-checkpoint-val", action="store_true")
+    parser.add_argument("--eval-all", action="store_true", help="Evaluate every dump in input-dir instead of splitting.")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--image-size", type=int, default=896)
     parser.add_argument("--top-k", type=int, default=0)

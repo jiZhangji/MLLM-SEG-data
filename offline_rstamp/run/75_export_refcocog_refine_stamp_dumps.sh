@@ -14,6 +14,7 @@ STAMP_DATA="${MLLM_SEG_ROOT}/code/STAMP/playground/data"
 SPLIT="${SPLIT:-refcocog_val}"
 EVAL_LIMIT="${EVAL_LIMIT:-20}"
 OUTPUT_DIR="${OUTPUT_DIR:-${MLLM_SEG_ROOT}/outputs/refine_stamp_dumps/${SPLIT}_${EVAL_LIMIT}}"
+JSON_PATH="${JSON_PATH:-${STAMP_DATA}/json_eval_baseline/${SPLIT}.json}"
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export TOKENIZERS_PARALLELISM=false
@@ -30,7 +31,7 @@ PYTHONPATH="${REFINE_SRC}:${PYTHONPATH:-}" python -m refine_stamp.scripts.export
   --root "${MLLM_SEG_ROOT}" \
   --stamp-code-dir "${STAMP_CODE_DIR}" \
   --model "${MODEL_NAME}" \
-  --json "${STAMP_DATA}/json_eval_baseline/${SPLIT}.json" \
+  --json "${JSON_PATH}" \
   --output-dir "${OUTPUT_DIR}" \
   --split-name "${SPLIT}" \
   --limit "${EVAL_LIMIT}" \

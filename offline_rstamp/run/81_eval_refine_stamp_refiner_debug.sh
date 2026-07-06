@@ -17,7 +17,7 @@ PYTHONPATH="${REFINE_SRC}:${PYTHONPATH:-}" python -m refine_stamp.scripts.eval_r
   --checkpoint "${CHECKPOINT}" \
   --output-dir "${OUTPUT_DIR}" \
   --selector "${SELECTOR}" \
-  --use-checkpoint-val \
+  ${EVAL_ALL_FLAG:-"--use-checkpoint-val"} \
   --top-k "${TOP_K:-64}" \
   --image-size "${IMAGE_SIZE:-896}" \
   --blend-weight "${BLEND_WEIGHT:-0.8}" \
