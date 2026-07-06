@@ -1,0 +1,28 @@
+model:
+  top_k: 64
+  boundary_weight: 0.5
+  selector_mode: hybrid
+  token_channels: 32
+  crop_size: 64
+  output_size: 16
+  box_scale: 1.0
+  blend_weight: 0.8
+
+training:
+  epochs: 10
+  batch_size: 2
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
+  max_grad_norm: 1.0
+  amp: true
+
+data:
+  image_size: 896
+  num_workers: 4
+
+evaluation:
+  threshold: 0.5
+  report_boundary_iou: true
+  report_small_object_iou: true
+  report_latency: true
+  report_memory: true
