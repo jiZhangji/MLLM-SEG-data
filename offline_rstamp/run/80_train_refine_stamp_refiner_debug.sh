@@ -19,7 +19,8 @@ PYTHONPATH="${REFINE_SRC}:${PYTHONPATH:-}" python -m refine_stamp.scripts.train_
   --batch-size "${BATCH_SIZE:-1}" \
   --top-k "${TOP_K:-64}" \
   --image-size "${IMAGE_SIZE:-896}" \
-  --learning-rate "${LR:-1e-4}"
+  --learning-rate "${LR:-1e-4}" \
+  --refiner-chunk-size "${REFINER_CHUNK_SIZE:-16}"
 
 echo "Checkpoint:"
 echo "${OUTPUT_DIR}/local_refiner.pt"

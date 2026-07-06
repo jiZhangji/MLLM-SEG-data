@@ -22,6 +22,7 @@ class LocalPatchRefiner(nn.Module):
         crop_size: int = 64,
         output_size: int = 16,
         box_scale: float = 1.0,
+        refiner_chunk_size: int = 0,
     ) -> None:
         super().__init__()
         if token_dim <= 0:
@@ -32,6 +33,7 @@ class LocalPatchRefiner(nn.Module):
         self.crop_size = crop_size
         self.output_size = output_size
         self.box_scale = box_scale
+        self.refiner_chunk_size = refiner_chunk_size
 
         self.token_projection = nn.Sequential(
             nn.Linear(token_dim, token_channels),
@@ -104,7 +106,13 @@ class LocalPatchRefiner(nn.Module):
         token_features = token_features.expand(-1, -1, self.crop_size, self.crop_size)
 
         features = torch.cat([image_crops, token_features], dim=1)
-        local_logits = self.refiner(features)
+        if self.refiner_chunk_size and self.refiner_chunk_size > 0:
+            chunks = []
+            for start in range(0, features.shape[0], self.refiner_chunk_size):
+                chunks.append(self.refiner(features[start : start + self.refiner_chunk_size]))
+            local_logits = torch.cat(chunks, dim=0)
+        else:
+            local_logits = self.refiner(features)
         local_logits = F.interpolate(
             local_logits,
             size=(self.output_size, self.output_size),

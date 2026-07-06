@@ -33,6 +33,7 @@ def load_model(checkpoint_path: Path, device: torch.device) -> tuple[LocalPatchR
         crop_size=int(config.get("crop_size", 64)),
         output_size=int(config.get("output_size", 16)),
         box_scale=float(config.get("box_scale", 1.0)),
+        refiner_chunk_size=int(config.get("refiner_chunk_size", 16)),
     )
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device)

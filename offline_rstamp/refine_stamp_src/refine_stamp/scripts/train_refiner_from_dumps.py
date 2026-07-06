@@ -48,6 +48,7 @@ def train(args: argparse.Namespace) -> dict:
         crop_size=args.crop_size,
         output_size=args.output_size,
         box_scale=args.box_scale,
+        refiner_chunk_size=args.refiner_chunk_size,
     ).to(device)
     selector = PatchSelector(top_k=args.top_k, boundary_weight=args.boundary_weight, mode=args.selector)
     optimizer = AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -135,6 +136,7 @@ def main() -> int:
     parser.add_argument("--crop-size", type=int, default=64)
     parser.add_argument("--output-size", type=int, default=16)
     parser.add_argument("--box-scale", type=float, default=1.0)
+    parser.add_argument("--refiner-chunk-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
