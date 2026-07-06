@@ -55,6 +55,32 @@ class LocalPatchRefiner(nn.Module):
             nn.GELU(),
             nn.Conv2d(32, 1, kernel_size=1),
         )
+        self._cudnn_fallback_active = False
+
+    def _run_refiner(self, features: torch.Tensor) -> torch.Tensor:
+        """Run the CNN, falling back from broken cuDNN to native CUDA conv.
+
+        Some server environments raise CUDNN_STATUS_NOT_INITIALIZED on the
+        first Conv2d even for small tensors. The fallback keeps tensors on CUDA
+        but disables cuDNN after the first failure, so training can continue.
+        """
+        if self._cudnn_fallback_active:
+            with torch.backends.cudnn.flags(enabled=False):
+                return self.refiner(features)
+        try:
+            return self.refiner(features)
+        except RuntimeError as exc:
+            message = str(exc)
+            if "CUDNN_STATUS_NOT_INITIALIZED" not in message and "cuDNN error" not in message:
+                raise
+            self._cudnn_fallback_active = True
+            print(
+                "[WARN] cuDNN failed inside LocalPatchRefiner; "
+                "falling back to native CUDA conv for refiner CNN.",
+                flush=True,
+            )
+            with torch.backends.cudnn.flags(enabled=False):
+                return self.refiner(features)
 
     def forward(
         self,
@@ -109,10 +135,10 @@ class LocalPatchRefiner(nn.Module):
         if self.refiner_chunk_size and self.refiner_chunk_size > 0:
             chunks = []
             for start in range(0, features.shape[0], self.refiner_chunk_size):
-                chunks.append(self.refiner(features[start : start + self.refiner_chunk_size]))
+                chunks.append(self._run_refiner(features[start : start + self.refiner_chunk_size]))
             local_logits = torch.cat(chunks, dim=0)
         else:
-            local_logits = self.refiner(features)
+            local_logits = self._run_refiner(features)
         local_logits = F.interpolate(
             local_logits,
             size=(self.output_size, self.output_size),
