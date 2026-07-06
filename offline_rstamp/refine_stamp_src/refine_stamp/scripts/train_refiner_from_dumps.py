@@ -14,6 +14,7 @@ from refine_stamp.data.dump_dataset import (
     collate_refinement_dumps,
     find_dump_paths,
     split_paths,
+    torch_load_trusted,
 )
 from refine_stamp.losses.refinement_losses import crop_gt_masks, refinement_loss
 from refine_stamp.models.local_refiner import LocalPatchRefiner
@@ -21,9 +22,19 @@ from refine_stamp.models.patch_selector import PatchSelector
 
 
 def infer_token_dim(path: Path) -> int:
-    payload = torch.load(path, map_location="cpu")
+    payload = torch_load_trusted(path, map_location="cpu")
     hidden = payload["mask_hidden"]
     return int(hidden.shape[-1])
+
+
+def json_safe(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    return value
 
 
 def train(args: argparse.Namespace) -> dict:
@@ -102,7 +113,7 @@ def train(args: argparse.Namespace) -> dict:
             "token_dim": token_dim,
             "selector": args.selector,
             "top_k": args.top_k,
-            "config": vars(args),
+            "config": json_safe(vars(args)),
             "train_paths": [str(p) for p in train_paths],
             "val_paths": [str(p) for p in val_paths],
             "history": history,

@@ -9,6 +9,18 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 
+def torch_load_trusted(path: str | Path, map_location: str = "cpu"):
+    """Load project-generated dump/checkpoint files under PyTorch 2.6+.
+
+    These files are produced by our own scripts, so we allow normal pickle
+    loading to keep metadata such as pathlib paths compatible.
+    """
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
 def find_dump_paths(input_dir: Path, limit: int = 0) -> list[Path]:
     paths = sorted(input_dir.expanduser().resolve().glob("*.pt"))
     if limit > 0:
@@ -66,7 +78,7 @@ class RefinementDumpDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         path = self.paths[index]
-        payload = torch.load(path, map_location="cpu")
+        payload = torch_load_trusted(path, map_location="cpu")
         image = _load_image_tensor(payload["image_path"], self.image_size)
         mask = _load_mask_tensor(payload["mask_path"], self.image_size)
         mask_logits = payload["mask_logits"].float()

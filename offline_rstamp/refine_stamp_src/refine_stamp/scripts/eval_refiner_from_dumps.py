@@ -16,6 +16,7 @@ from refine_stamp.data.dump_dataset import (
     collate_refinement_dumps,
     find_dump_paths,
     split_paths,
+    torch_load_trusted,
 )
 from refine_stamp.models.local_refiner import LocalPatchRefiner
 from refine_stamp.models.patch_selector import PatchSelector
@@ -25,7 +26,7 @@ from refine_stamp.utils.visualization import make_panel, overlay_mask, save_imag
 
 
 def load_model(checkpoint_path: Path, device: torch.device) -> tuple[LocalPatchRefiner, dict]:
-    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    ckpt = torch_load_trusted(checkpoint_path, map_location="cpu")
     config = ckpt["config"]
     model = LocalPatchRefiner(
         token_dim=int(ckpt["token_dim"]),
@@ -174,7 +175,7 @@ def evaluate(args: argparse.Namespace) -> dict:
             rows.append(row)
 
             if index < args.visualize_limit:
-                image_path = torch.load(batch["paths"][0], map_location="cpu")["image_path"]
+                image_path = torch_load_trusted(batch["paths"][0], map_location="cpu")["image_path"]
                 image_pil = Image.open(image_path).convert("RGB")
                 image_pil = image_pil.resize((args.image_size, args.image_size))
                 panel = make_panel(
