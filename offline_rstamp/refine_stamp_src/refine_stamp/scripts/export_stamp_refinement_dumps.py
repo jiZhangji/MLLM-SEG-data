@@ -44,10 +44,14 @@ def load_official_question_templates(stamp_code_dir: Path) -> list[str]:
     return ["Please segment the [class_name] in this image."]
 
 
-def load_items(path: Path, limit: int) -> list[dict[str, Any]]:
+def load_items(path: Path, limit: int, offset: int = 0) -> list[dict[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, list):
         raise TypeError(f"Expected a JSON list: {path}")
+    if offset < 0:
+        raise ValueError("offset must be non-negative.")
+    if offset > 0:
+        data = data[offset:]
     if limit > 0:
         data = data[:limit]
     return data
@@ -203,7 +207,7 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
 
     GenerativeSegmenter = load_segmenter_class(stamp_code_dir)
     official_templates = load_official_question_templates(stamp_code_dir)
-    items = load_items(json_path, args.limit)
+    items = load_items(json_path, args.limit, args.offset)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     segmenter = GenerativeSegmenter(
@@ -215,7 +219,8 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
 
     exported = []
     failed = []
-    for index, item in enumerate(tqdm(items, desc="export_refinement_dumps")):
+    for local_index, item in enumerate(tqdm(items, desc="export_refinement_dumps")):
+        index = args.offset + local_index
         image_path = get_image_path(item, root)
         mask_path = get_mask_path(item, root)
         query = build_query(item, args.prompt_mode, official_templates)
@@ -251,6 +256,8 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
         "json": str(json_path),
         "output_dir": str(output_dir),
         "num_items": len(items),
+        "offset": args.offset,
+        "limit": args.limit,
         "num_exported": len(exported),
         "num_failed": len(failed),
         "exported": exported,
@@ -267,6 +274,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--split-name", default="refcocog_val")
     parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--min-pixels", type=int, default=802816)
     parser.add_argument("--max-pixels", type=int, default=1003520)
     parser.add_argument("--prompt-mode", choices=["prepared", "official", "target_only"], default="official")
