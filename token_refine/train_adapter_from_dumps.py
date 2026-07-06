@@ -31,6 +31,28 @@ def split_paths(paths: list[Path], val_fraction: float, seed: int) -> tuple[list
     return shuffled[val_count:], shuffled[:val_count]
 
 
+def read_grid_hw(path: Path) -> tuple[int, int]:
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    return tuple(payload["grid_hw"])
+
+
+def grouped_batch_indices(paths: list[Path], batch_size: int, shuffle: bool, seed: int) -> list[list[int]]:
+    groups: dict[tuple[int, int], list[int]] = {}
+    for index, path in enumerate(paths):
+        groups.setdefault(read_grid_hw(path), []).append(index)
+
+    rng = random.Random(seed)
+    batches = []
+    for indices in groups.values():
+        if shuffle:
+            rng.shuffle(indices)
+        for start in range(0, len(indices), batch_size):
+            batches.append(indices[start : start + batch_size])
+    if shuffle:
+        rng.shuffle(batches)
+    return batches
+
+
 def token_loss(
     outputs: dict[str, torch.Tensor],
     target_tokens: torch.Tensor,
@@ -113,16 +135,14 @@ def main() -> int:
 
     train_loader = DataLoader(
         TokenDumpDataset(train_paths, args.image_size),
-        batch_size=args.batch_size,
-        shuffle=True,
+        batch_sampler=grouped_batch_indices(train_paths, args.batch_size, True, args.seed),
         num_workers=args.num_workers,
         collate_fn=collate_token_dumps,
         pin_memory=device.type == "cuda",
     )
     val_loader = DataLoader(
         TokenDumpDataset(val_paths or train_paths, args.image_size),
-        batch_size=args.batch_size,
-        shuffle=False,
+        batch_sampler=grouped_batch_indices(val_paths or train_paths, args.batch_size, False, args.seed),
         num_workers=args.num_workers,
         collate_fn=collate_token_dumps,
         pin_memory=device.type == "cuda",
@@ -183,4 +203,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

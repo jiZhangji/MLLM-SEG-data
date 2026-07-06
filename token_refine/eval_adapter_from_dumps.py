@@ -13,6 +13,22 @@ from token_refine.metrics import binary_iou, logits_to_mask
 from token_refine.model import MaskTokenRefinementAdapter
 
 
+def read_grid_hw(path: Path) -> tuple[int, int]:
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    return tuple(payload["grid_hw"])
+
+
+def grouped_batch_indices(paths: list[Path], batch_size: int) -> list[list[int]]:
+    groups: dict[tuple[int, int], list[int]] = {}
+    for index, path in enumerate(paths):
+        groups.setdefault(read_grid_hw(path), []).append(index)
+    batches = []
+    for indices in groups.values():
+        for start in range(0, len(indices), batch_size):
+            batches.append(indices[start : start + batch_size])
+    return batches
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-dir", required=True, type=Path)
@@ -43,8 +59,7 @@ def main() -> int:
         raise FileNotFoundError(f"No .pt dumps found in {args.input_dir}")
     loader = DataLoader(
         TokenDumpDataset(paths, args.image_size),
-        batch_size=args.batch_size,
-        shuffle=False,
+        batch_sampler=grouped_batch_indices(paths, args.batch_size),
         num_workers=args.num_workers,
         collate_fn=collate_token_dumps,
         pin_memory=device.type == "cuda",
@@ -98,4 +113,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
