@@ -30,9 +30,14 @@ def main() -> int:
     args = parser.parse_args()
 
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    if not isinstance(ckpt, dict):
+        raise TypeError(f"Checkpoint must be a dict, got {type(ckpt)}")
     config = ckpt.get("config", {})
     selector_name = args.selector or ckpt.get("selector") or config.get("selector", "hybrid")
-    top_k = args.top_k or int(config.get("top_k", 64))
+    top_k = args.top_k or int(ckpt.get("top_k", config.get("top_k", 64)))
+    model_state = ckpt.get("model") or ckpt.get("model_state_dict")
+    if model_state is None:
+        raise KeyError("Checkpoint must contain either 'model' or 'model_state_dict'.")
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
 
     model = LocalPatchRefiner(
@@ -43,7 +48,7 @@ def main() -> int:
         box_scale=float(config.get("box_scale", 1.0)),
         chunk_size=int(config.get("chunk_size", 16)),
     ).to(device)
-    model.load_state_dict(ckpt["model"])
+    model.load_state_dict(model_state)
     model.eval()
     selector = PatchSelector(top_k, args.boundary_weight, selector_name).to(device)
 
