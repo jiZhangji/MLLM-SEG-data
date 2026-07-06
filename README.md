@@ -1,4 +1,4 @@
-# MLLM-SEG datasets downloader
+﻿# MLLM-SEG datasets downloader
 
 Resumable downloader for the datasets used by **Seg-Zero**, **Text4Seg**, and
 **STAMP**. Large datasets are not committed to this repository.
@@ -58,20 +58,20 @@ once:
 
 ```text
 /data/MLLM-SEG/
-├── shared/
-│   └── coco/
-│       ├── train2014/
-│       └── annotations/
-├── annotations/
-│   ├── refcoco_family/
-│   ├── grefcoco/
-│   └── llava_665k/
-├── datasets/
-│   ├── refclef_referit/
-│   ├── reasonseg/
-│   └── reasonseg_test_segzero/
-└── optional/
-    └── open_vocabulary/cocostuff164k/
+鈹溾攢鈹€ shared/
+鈹?  鈹斺攢鈹€ coco/
+鈹?      鈹溾攢鈹€ train2014/
+鈹?      鈹斺攢鈹€ annotations/
+鈹溾攢鈹€ annotations/
+鈹?  鈹溾攢鈹€ refcoco_family/
+鈹?  鈹溾攢鈹€ grefcoco/
+鈹?  鈹斺攢鈹€ llava_665k/
+鈹溾攢鈹€ datasets/
+鈹?  鈹溾攢鈹€ refclef_referit/
+鈹?  鈹溾攢鈹€ reasonseg/
+鈹?  鈹斺攢鈹€ reasonseg_test_segzero/
+鈹斺攢鈹€ optional/
+    鈹斺攢鈹€ open_vocabulary/cocostuff164k/
 ```
 
 The RefCOCO family and gRefCOCO reuse images under `shared/coco/train2014`.
@@ -119,28 +119,3 @@ mirror. This avoids certificate-chain failures frequently seen with the
 - Text4Seg: <https://github.com/mc-lan/Text4Seg>
 - STAMP: <https://github.com/HKUST-LongGroup/STAMP>
 
-## Offline R-STAMP experiment scaffold
-
-This repository also contains an offline experiment scaffold under
-`offline_rstamp/`.
-
-It is designed for servers without internet access:
-
-- check the downloaded dataset layout;
-- create a clean local experiment workspace;
-- verify whether the upstream code repositories have been copied in;
-- install the lightweight R-STAMP scaffold into a local STAMP checkout;
-- keep all commands, paths and experiment notes in one place.
-
-Start from:
-
-```bash
-cd MLLM-SEG-data
-cp offline_rstamp/paths.example.sh offline_rstamp/paths.local.sh
-# edit paths.local.sh
-bash offline_rstamp/run/00_prepare_workspace.sh
-python offline_rstamp/scripts/check_code_repos.py --code-root /path/to/workspace/code
-```
-
-The scaffold does not download models, code or data. Copy the required
-artifacts to the offline server manually.
