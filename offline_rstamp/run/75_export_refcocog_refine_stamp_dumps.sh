@@ -14,6 +14,7 @@ STAMP_DATA="${MLLM_SEG_ROOT}/code/STAMP/playground/data"
 SPLIT="${SPLIT:-refcocog_val}"
 EVAL_LIMIT="${EVAL_LIMIT:-20}"
 OFFSET="${OFFSET:-0}"
+OVERWRITE="${OVERWRITE:-0}"
 OUTPUT_DIR="${OUTPUT_DIR:-${MLLM_SEG_ROOT}/outputs/refine_stamp_dumps/${SPLIT}_${EVAL_LIMIT}}"
 JSON_PATH="${JSON_PATH:-${STAMP_DATA}/json_eval_baseline/${SPLIT}.json}"
 
@@ -39,7 +40,8 @@ PYTHONPATH="${REFINE_SRC}:${PYTHONPATH:-}" python -m refine_stamp.scripts.export
   --offset "${OFFSET}" \
   --min-pixels "${STAMP_MIN_PIXELS}" \
   --max-pixels "${STAMP_MAX_PIXELS}" \
-  --prompt-mode "${STAMP_PROMPT_MODE}"
+  --prompt-mode "${STAMP_PROMPT_MODE}" \
+  $([[ "${OVERWRITE}" == "1" ]] && echo "--overwrite")
 
 echo "Refinement dumps written to:"
 echo "${OUTPUT_DIR}"

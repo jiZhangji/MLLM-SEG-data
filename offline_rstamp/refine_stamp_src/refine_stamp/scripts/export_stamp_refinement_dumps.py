@@ -218,9 +218,15 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     exported = []
+    skipped = []
     failed = []
     for local_index, item in enumerate(tqdm(items, desc="export_refinement_dumps")):
         index = args.offset + local_index
+        out_path = output_dir / f"{args.split_name}_{index:06d}.pt"
+        if out_path.exists() and not args.overwrite:
+            skipped.append(str(out_path))
+            continue
+
         image_path = get_image_path(item, root)
         mask_path = get_mask_path(item, root)
         query = build_query(item, args.prompt_mode, official_templates)
@@ -243,7 +249,6 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
                 "mask_hidden": outputs["mask_hidden"],
                 "grid_hw": outputs["grid_hw"],
             }
-            out_path = output_dir / f"{args.split_name}_{index:06d}.pt"
             torch.save(dump, out_path)
             exported.append(str(out_path))
         except Exception as exc:
@@ -259,8 +264,10 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
         "offset": args.offset,
         "limit": args.limit,
         "num_exported": len(exported),
+        "num_skipped": len(skipped),
         "num_failed": len(failed),
         "exported": exported,
+        "skipped": skipped,
         "failed": failed,
     }
 
@@ -279,6 +286,7 @@ def main() -> int:
     parser.add_argument("--max-pixels", type=int, default=1003520)
     parser.add_argument("--prompt-mode", choices=["prepared", "official", "target_only"], default="official")
     parser.add_argument("--device-map", default="cuda")
+    parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     args = parser.parse_args()
 
