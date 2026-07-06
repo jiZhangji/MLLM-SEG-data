@@ -17,10 +17,13 @@ def stitch_logits(
     boxes: torch.Tensor,
     image_hw: tuple[int, int],
     blend_weight: float = 0.8,
+    grid_hw: tuple[int, int] | None = None,
 ) -> torch.Tensor:
     batch_size, top_k, _, _, _ = local_logits.shape
     image_h, image_w = image_hw
-    fg_logits = coarse_logits[..., 1].reshape(batch_size, 1, *infer_grid(coarse_logits))
+    if grid_hw is None:
+        grid_hw = infer_grid(coarse_logits)
+    fg_logits = coarse_logits[..., 1].reshape(batch_size, 1, *grid_hw)
     canvas = F.interpolate(fg_logits, size=image_hw, mode="bilinear", align_corners=False)
     weight = torch.ones_like(canvas)
 

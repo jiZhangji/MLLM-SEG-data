@@ -75,7 +75,16 @@ def main() -> int:
                 mode="bilinear",
                 align_corners=False,
             )
-            refined_fg = torch.sigmoid(stitch_logits(mask_logits, output["local_logits"], output["boxes"], (args.image_size, args.image_size), args.blend_weight))
+            refined_fg = torch.sigmoid(
+                stitch_logits(
+                    mask_logits,
+                    output["local_logits"],
+                    output["boxes"],
+                    (args.image_size, args.image_size),
+                    args.blend_weight,
+                    grid_hw=grid_hw,
+                )
+            )
             targets = crop_mask_targets(gt_mask, output["boxes"], model.output_size)
             row = {
                 "name": batch["name"][0],
