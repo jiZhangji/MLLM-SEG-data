@@ -44,6 +44,25 @@ class LocalPatchRefiner(nn.Module):
             nn.GELU(),
             nn.Conv2d(32, 1, kernel_size=1),
         )
+        self._cudnn_fallback_active = False
+
+    def _run_refiner(self, features: torch.Tensor) -> torch.Tensor:
+        if self._cudnn_fallback_active:
+            with torch.backends.cudnn.flags(enabled=False):
+                return self.refiner(features)
+        try:
+            return self.refiner(features)
+        except RuntimeError as exc:
+            message = str(exc)
+            if "CUDNN_STATUS_NOT_INITIALIZED" not in message and "cuDNN error" not in message:
+                raise
+            self._cudnn_fallback_active = True
+            print(
+                "[WARN] cuDNN failed inside LocalPatchRefiner; falling back to native CUDA conv.",
+                flush=True,
+            )
+            with torch.backends.cudnn.flags(enabled=False):
+                return self.refiner(features)
 
     def forward(
         self,
@@ -67,11 +86,11 @@ class LocalPatchRefiner(nn.Module):
 
         if self.chunk_size and self.chunk_size > 0:
             logits = torch.cat(
-                [self.refiner(features[start : start + self.chunk_size]) for start in range(0, features.shape[0], self.chunk_size)],
+                [self._run_refiner(features[start : start + self.chunk_size]) for start in range(0, features.shape[0], self.chunk_size)],
                 dim=0,
             )
         else:
-            logits = self.refiner(features)
+            logits = self._run_refiner(features)
         logits = F.interpolate(logits, size=(self.output_size, self.output_size), mode="bilinear", align_corners=False)
         return {"local_logits": logits.reshape(batch_size, top_k, 1, self.output_size, self.output_size), "boxes": boxes}
 
