@@ -27,6 +27,10 @@ def infer_token_dim(path: Path) -> int:
 
 
 def train(args: argparse.Namespace) -> dict:
+    if args.disable_cudnn:
+        torch.backends.cudnn.enabled = False
+        print("[INFO] cuDNN disabled for Stage-2 local refiner training.")
+
     paths = find_dump_paths(args.input_dir, args.limit)
     train_paths, val_paths = split_paths(paths, val_fraction=args.val_fraction, seed=args.seed)
     token_dim = infer_token_dim(train_paths[0])
@@ -140,6 +144,12 @@ def main() -> int:
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
+    parser.add_argument(
+        "--disable-cudnn",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Disable cuDNN for the small local refiner. This does not affect STAMP because Stage 2 trains from dumps.",
+    )
     args = parser.parse_args()
     report = train(args)
     print(json.dumps(report, indent=2))

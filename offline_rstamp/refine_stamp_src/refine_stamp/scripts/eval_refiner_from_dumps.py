@@ -101,6 +101,10 @@ def write_markdown(path: Path, summary: dict, settings: dict) -> None:
 
 
 def evaluate(args: argparse.Namespace) -> dict:
+    if args.disable_cudnn:
+        torch.backends.cudnn.enabled = False
+        print("[INFO] cuDNN disabled for Stage-2 local refiner evaluation.")
+
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
     model, ckpt = load_model(args.checkpoint, device)
     selector_name = args.selector or ckpt.get("selector") or ckpt["config"].get("selector", "hybrid")
@@ -213,6 +217,12 @@ def main() -> int:
     parser.add_argument("--boundary-weight", type=float, default=0.5)
     parser.add_argument("--blend-weight", type=float, default=0.8)
     parser.add_argument("--visualize-limit", type=int, default=8)
+    parser.add_argument(
+        "--disable-cudnn",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Disable cuDNN for the small local refiner. This does not affect STAMP because Stage 2 evaluates from dumps.",
+    )
     args = parser.parse_args()
     report = evaluate(args)
     print(json.dumps(report, indent=2))

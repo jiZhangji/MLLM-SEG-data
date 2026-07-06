@@ -21,7 +21,8 @@ PYTHONPATH="${REFINE_SRC}:${PYTHONPATH:-}" python -m refine_stamp.scripts.eval_r
   --top-k "${TOP_K:-64}" \
   --image-size "${IMAGE_SIZE:-896}" \
   --blend-weight "${BLEND_WEIGHT:-0.8}" \
-  --visualize-limit "${VISUALIZE_LIMIT:-8}"
+  --visualize-limit "${VISUALIZE_LIMIT:-8}" \
+  "${CUDNN_FLAG:---disable-cudnn}"
 
 echo "Report:"
 echo "${OUTPUT_DIR}/refiner_eval_summary.md"
