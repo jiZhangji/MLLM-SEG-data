@@ -58,20 +58,20 @@ once:
 
 ```text
 /data/MLLM-SEG/
-鈹溾攢鈹€ shared/
-鈹?  鈹斺攢鈹€ coco/
-鈹?      鈹溾攢鈹€ train2014/
-鈹?      鈹斺攢鈹€ annotations/
-鈹溾攢鈹€ annotations/
-鈹?  鈹溾攢鈹€ refcoco_family/
-鈹?  鈹溾攢鈹€ grefcoco/
-鈹?  鈹斺攢鈹€ llava_665k/
-鈹溾攢鈹€ datasets/
-鈹?  鈹溾攢鈹€ refclef_referit/
-鈹?  鈹溾攢鈹€ reasonseg/
-鈹?  鈹斺攢鈹€ reasonseg_test_segzero/
-鈹斺攢鈹€ optional/
-    鈹斺攢鈹€ open_vocabulary/cocostuff164k/
+|-- shared/
+|   `-- coco/
+|       |-- train2014/
+|       `-- annotations/
+|-- annotations/
+|   |-- refcoco_family/
+|   |-- grefcoco/
+|   `-- llava_665k/
+|-- datasets/
+|   |-- refclef_referit/
+|   |-- reasonseg/
+|   `-- reasonseg_test_segzero/
+`-- optional/
+    `-- open_vocabulary/cocostuff164k/
 ```
 
 The RefCOCO family and gRefCOCO reuse images under `shared/coco/train2014`.
@@ -119,3 +119,44 @@ mirror. This avoids certificate-chain failures frequently seen with the
 - Text4Seg: <https://github.com/mc-lan/Text4Seg>
 - STAMP: <https://github.com/HKUST-LongGroup/STAMP>
 
+## Local refinement from exported dumps
+
+The `local_refine/` package trains and evaluates a lightweight local mask
+refiner from previously exported `.pt` dump files. It intentionally uses a
+neutral name and does not depend on the removed experiment scaffold.
+
+Expected dump fields:
+
+- `mask_logits`: coarse token logits with shape `[1, N, 2]`
+- `mask_hidden`: token features with shape `[1, N, D]`
+- `grid_hw`: token grid size, for example `(16, 16)`
+- `image_path`: image file used by the dump
+- `mask_path`: ground-truth mask file used by the dump
+
+Train:
+
+```bash
+cd MLLM-SEG-data
+INPUT_DIR="../outputs/seg_dumps/refcocog_val_0" \
+OUTPUT_DIR="../outputs/local_refine_train_refcocog_val_0" \
+TOP_K=64 \
+EPOCHS=5 \
+BATCH_SIZE=1 \
+DEVICE=cuda \
+bash run_local_refine_train.sh
+```
+
+Evaluate:
+
+```bash
+cd MLLM-SEG-data
+INPUT_DIR="../outputs/seg_dumps/refcocog_val_0" \
+CHECKPOINT="../outputs/local_refine_train_refcocog_val_0/best.pt" \
+OUTPUT_DIR="../outputs/local_refine_eval_refcocog_val_0" \
+TOP_K=64 \
+DEVICE=cuda \
+bash run_local_refine_eval.sh
+```
+
+If the server still uses the previous dump directory name, set `INPUT_DIR` to
+that existing path instead of renaming it.
