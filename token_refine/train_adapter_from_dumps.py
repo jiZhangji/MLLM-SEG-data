@@ -62,16 +62,25 @@ def is_rank0(rank: int) -> bool:
     return rank == 0
 
 
-def maybe_barrier(world_size: int) -> None:
+def maybe_barrier(world_size: int, device: torch.device | None = None) -> None:
     if world_size > 1:
-        dist.barrier()
+        if device is not None and device.type == "cuda":
+            dist.barrier(device_ids=[device.index])
+        else:
+            dist.barrier()
 
 
 def build_grid_cache(paths: list[Path], cache_path: Path) -> dict[str, list[int]]:
     return {str(path.resolve()): list(read_grid_hw(path)) for path in paths}
 
 
-def load_or_build_grid_cache(paths: list[Path], cache_path: Path, rank: int, world_size: int) -> dict[str, tuple[int, int]]:
+def load_or_build_grid_cache(
+    paths: list[Path],
+    cache_path: Path,
+    rank: int,
+    world_size: int,
+    device: torch.device,
+) -> dict[str, tuple[int, int]]:
     resolved_keys = {str(path.resolve()) for path in paths}
     if is_rank0(rank):
         rebuild = True
@@ -91,7 +100,7 @@ def load_or_build_grid_cache(paths: list[Path], cache_path: Path, rank: int, wor
             print(f"[INFO] Wrote grid cache: {cache_path}", flush=True)
         else:
             print(f"[INFO] Using grid cache: {cache_path}", flush=True)
-    maybe_barrier(world_size)
+    maybe_barrier(world_size, device)
     cached = json.loads(cache_path.read_text(encoding="utf-8"))
     return {key: tuple(value) for key, value in cached["grids"].items() if key in resolved_keys}
 
@@ -214,7 +223,8 @@ def main() -> int:
 
     device, rank, _local_rank, world_size = setup_distributed(args.device)
     cache_path = args.grid_cache or (args.input_dir / "token_refine_grid_cache.json")
-    grid_cache = load_or_build_grid_cache(paths, cache_path, rank, world_size)
+    grid_cache = load_or_build_grid_cache(paths, cache_path, rank, world_size, device)
+    print(f"[INFO] rank={rank} world_size={world_size} device={device}", flush=True)
 
     model = MaskTokenRefinementAdapter(
         token_dim=token_dim,
@@ -246,7 +256,7 @@ def main() -> int:
             f"[INFO] rank={rank} world_size={world_size} train_batches={len(train_loader)} val_batches={len(val_loader)}",
             flush=True,
         )
-    maybe_barrier(world_size)
+    maybe_barrier(world_size, device)
     best_refined_iou = -1.0
     history = []
     for epoch in range(1, args.epochs + 1):
@@ -295,7 +305,7 @@ def main() -> int:
                 },
                 args.output_dir / "adapter.pt",
             )
-        maybe_barrier(world_size)
+        maybe_barrier(world_size, device)
 
     if is_rank0(rank):
         report = {
