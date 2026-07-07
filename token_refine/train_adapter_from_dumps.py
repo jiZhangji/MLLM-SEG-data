@@ -5,6 +5,7 @@ import json
 import math
 import os
 import random
+import time
 from pathlib import Path
 
 import torch
@@ -74,16 +75,31 @@ def build_grid_cache(paths: list[Path], cache_path: Path) -> dict[str, list[int]
     return {str(path.resolve()): list(read_grid_hw(path)) for path in paths}
 
 
+def cache_ready_path(cache_path: Path) -> Path:
+    return cache_path.with_suffix(cache_path.suffix + ".ready")
+
+
+def wait_for_grid_cache(cache_path: Path, started_at: float, timeout_seconds: int = 7200) -> None:
+    ready_path = cache_ready_path(cache_path)
+    while True:
+        if ready_path.exists() and cache_path.exists() and ready_path.stat().st_mtime >= started_at:
+            return
+        if time.time() - started_at > timeout_seconds:
+            raise TimeoutError(f"Timed out waiting for grid cache: {cache_path}")
+        time.sleep(5)
+
+
 def load_or_build_grid_cache(
     paths: list[Path],
     cache_path: Path,
     rank: int,
     world_size: int,
-    device: torch.device,
+    started_at: float,
 ) -> dict[str, tuple[int, int]]:
     resolved_keys = {str(path.resolve()) for path in paths}
     if is_rank0(rank):
         rebuild = True
+        ready_path = cache_ready_path(cache_path)
         if cache_path.exists():
             try:
                 cached = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -97,10 +113,13 @@ def load_or_build_grid_cache(
             tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
             tmp_path.write_text(json.dumps({"grids": grids}, indent=2), encoding="utf-8")
             tmp_path.replace(cache_path)
+            ready_path.write_text("ready\n", encoding="utf-8")
             print(f"[INFO] Wrote grid cache: {cache_path}", flush=True)
         else:
+            ready_path.write_text("ready\n", encoding="utf-8")
             print(f"[INFO] Using grid cache: {cache_path}", flush=True)
-    maybe_barrier(world_size, device)
+    elif world_size > 1:
+        wait_for_grid_cache(cache_path, started_at)
     cached = json.loads(cache_path.read_text(encoding="utf-8"))
     return {key: tuple(value) for key, value in cached["grids"].items() if key in resolved_keys}
 
@@ -213,9 +232,11 @@ def main() -> int:
     parser.add_argument("--delta-reg-weight", type=float, default=0.01)
     parser.add_argument("--use-uncertainty-gate", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--grid-cache", type=Path, default=None)
+    parser.add_argument("--build-cache-only", action="store_true")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
+    started_at = time.time()
     paths = find_dump_paths(args.input_dir, args.limit)
     train_paths, val_paths = split_paths(paths, args.val_fraction, args.seed)
     sample = torch.load(paths[0], map_location="cpu", weights_only=False)
@@ -223,8 +244,14 @@ def main() -> int:
 
     device, rank, _local_rank, world_size = setup_distributed(args.device)
     cache_path = args.grid_cache or (args.input_dir / "token_refine_grid_cache.json")
-    grid_cache = load_or_build_grid_cache(paths, cache_path, rank, world_size, device)
+    grid_cache = load_or_build_grid_cache(paths, cache_path, rank, world_size, started_at)
     print(f"[INFO] rank={rank} world_size={world_size} device={device}", flush=True)
+    if args.build_cache_only:
+        if is_rank0(rank):
+            print(f"[INFO] Built grid cache for {len(grid_cache)} dumps: {cache_path}", flush=True)
+        if world_size > 1:
+            dist.destroy_process_group()
+        return 0
 
     model = MaskTokenRefinementAdapter(
         token_dim=token_dim,
