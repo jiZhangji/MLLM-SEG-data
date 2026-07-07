@@ -18,6 +18,11 @@ from token_refine.data import TokenDumpDataset, collate_token_dumps
 from token_refine.metrics import binary_iou, logits_to_mask
 from token_refine.model import MaskTokenRefinementAdapter
 
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - tqdm is optional for server environments.
+    tqdm = None
+
 
 def find_dump_paths(input_dir: Path, limit: int) -> list[Path]:
     paths = sorted(input_dir.glob("*.pt"))
@@ -173,12 +178,27 @@ def token_loss(
     return loss_ce + delta_reg_weight * delta_reg
 
 
+def progress_iter(iterable, enabled: bool, **kwargs):
+    if enabled and tqdm is not None:
+        return tqdm(iterable, **kwargs)
+    return iterable
+
+
 @torch.no_grad()
-def evaluate(model, loader, device, image_size: int, world_size: int = 1) -> dict[str, float]:
+def evaluate(
+    model,
+    loader,
+    device,
+    image_size: int,
+    world_size: int = 1,
+    show_progress: bool = False,
+    desc: str = "eval",
+) -> dict[str, float]:
     model.eval()
     totals = {"coarse_iou": 0.0, "refined_iou": 0.0, "token_acc": 0.0}
     count = 0
-    for batch in loader:
+    iterator = progress_iter(loader, show_progress, desc=desc, total=len(loader), dynamic_ncols=True, leave=False)
+    for batch in iterator:
         mask_logits = batch["mask_logits"].to(device)
         mask_hidden = batch["mask_hidden"].to(device)
         target_tokens = batch["target_tokens"].to(device)
@@ -197,6 +217,8 @@ def evaluate(model, loader, device, image_size: int, world_size: int = 1) -> dic
         totals["refined_iou"] += float(refined_iou.item()) * batch_size
         totals["token_acc"] += float(token_acc.item()) * batch_size
         count += batch_size
+        if show_progress and tqdm is not None:
+            iterator.set_postfix(refined_iou=f"{totals['refined_iou'] / max(count, 1):.4f}")
     if world_size > 1:
         packed = torch.tensor(
             [totals["coarse_iou"], totals["refined_iou"], totals["token_acc"], float(count)],
@@ -233,6 +255,7 @@ def main() -> int:
     parser.add_argument("--use-uncertainty-gate", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--grid-cache", type=Path, default=None)
     parser.add_argument("--build-cache-only", action="store_true")
+    parser.add_argument("--progress", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -290,7 +313,16 @@ def main() -> int:
         model.train()
         total_loss = 0.0
         total_count = 0
-        for batch in train_loader:
+        show_train_progress = args.progress and is_rank0(rank)
+        train_iter = progress_iter(
+            train_loader,
+            show_train_progress,
+            desc=f"epoch {epoch}/{args.epochs} train",
+            total=len(train_loader),
+            dynamic_ncols=True,
+            leave=True,
+        )
+        for batch in train_iter:
             mask_logits = batch["mask_logits"].to(device)
             mask_hidden = batch["mask_hidden"].to(device)
             target_tokens = batch["target_tokens"].to(device)
@@ -302,6 +334,8 @@ def main() -> int:
             optimizer.step()
             total_loss += float(loss.item()) * mask_logits.shape[0]
             total_count += mask_logits.shape[0]
+            if show_train_progress and tqdm is not None:
+                train_iter.set_postfix(loss=f"{total_loss / max(total_count, 1):.5f}")
 
         if world_size > 1:
             packed_loss = torch.tensor([total_loss, float(total_count)], device=device, dtype=torch.float64)
@@ -310,7 +344,15 @@ def main() -> int:
             total_count = int(packed_loss[1].item())
 
         eval_model = model.module if hasattr(model, "module") else model
-        val_metrics = evaluate(eval_model, val_loader, device, args.image_size, world_size)
+        val_metrics = evaluate(
+            eval_model,
+            val_loader,
+            device,
+            args.image_size,
+            world_size,
+            show_progress=args.progress and is_rank0(rank),
+            desc=f"epoch {epoch}/{args.epochs} val",
+        )
         row = {
             "epoch": epoch,
             "train_loss": total_loss / max(total_count, 1),
