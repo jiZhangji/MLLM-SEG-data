@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import random
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 
 from token_refine.data import TokenDumpDataset, collate_token_dumps
@@ -36,10 +40,74 @@ def read_grid_hw(path: Path) -> tuple[int, int]:
     return tuple(payload["grid_hw"])
 
 
-def grouped_batch_indices(paths: list[Path], batch_size: int, shuffle: bool, seed: int) -> list[list[int]]:
+def setup_distributed(device_arg: str) -> tuple[torch.device, int, int, int]:
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if world_size > 1:
+        backend = "nccl" if torch.cuda.is_available() and device_arg != "cpu" else "gloo"
+        dist.init_process_group(backend=backend)
+    if torch.cuda.is_available() and device_arg != "cpu":
+        if world_size > 1:
+            torch.cuda.set_device(local_rank)
+            device = torch.device(f"cuda:{local_rank}")
+        else:
+            device = torch.device(device_arg)
+    else:
+        device = torch.device("cpu")
+    return device, rank, local_rank, world_size
+
+
+def is_rank0(rank: int) -> bool:
+    return rank == 0
+
+
+def maybe_barrier(world_size: int) -> None:
+    if world_size > 1:
+        dist.barrier()
+
+
+def build_grid_cache(paths: list[Path], cache_path: Path) -> dict[str, list[int]]:
+    return {str(path.resolve()): list(read_grid_hw(path)) for path in paths}
+
+
+def load_or_build_grid_cache(paths: list[Path], cache_path: Path, rank: int, world_size: int) -> dict[str, tuple[int, int]]:
+    resolved_keys = {str(path.resolve()) for path in paths}
+    if is_rank0(rank):
+        rebuild = True
+        if cache_path.exists():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                grids = cached.get("grids", {})
+                rebuild = not resolved_keys.issubset(set(grids))
+            except Exception:
+                rebuild = True
+        if rebuild:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            grids = build_grid_cache(paths, cache_path)
+            tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+            tmp_path.write_text(json.dumps({"grids": grids}, indent=2), encoding="utf-8")
+            tmp_path.replace(cache_path)
+            print(f"[INFO] Wrote grid cache: {cache_path}", flush=True)
+        else:
+            print(f"[INFO] Using grid cache: {cache_path}", flush=True)
+    maybe_barrier(world_size)
+    cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    return {key: tuple(value) for key, value in cached["grids"].items() if key in resolved_keys}
+
+
+def grouped_batch_indices(
+    paths: list[Path],
+    batch_size: int,
+    shuffle: bool,
+    seed: int,
+    grid_cache: dict[str, tuple[int, int]],
+    rank: int = 0,
+    world_size: int = 1,
+) -> list[list[int]]:
     groups: dict[tuple[int, int], list[int]] = {}
     for index, path in enumerate(paths):
-        groups.setdefault(read_grid_hw(path), []).append(index)
+        groups.setdefault(grid_cache[str(path.resolve())], []).append(index)
 
     rng = random.Random(seed)
     batches = []
@@ -50,6 +118,11 @@ def grouped_batch_indices(paths: list[Path], batch_size: int, shuffle: bool, see
             batches.append(indices[start : start + batch_size])
     if shuffle:
         rng.shuffle(batches)
+    if world_size > 1 and batches:
+        target_len = math.ceil(len(batches) / world_size) * world_size
+        while len(batches) < target_len:
+            batches.append(list(batches[len(batches) % len(batches)]))
+        batches = batches[rank::world_size]
     return batches
 
 
@@ -73,7 +146,7 @@ def token_loss(
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, image_size: int) -> dict[str, float]:
+def evaluate(model, loader, device, image_size: int, world_size: int = 1) -> dict[str, float]:
     model.eval()
     totals = {"coarse_iou": 0.0, "refined_iou": 0.0, "token_acc": 0.0}
     count = 0
@@ -96,6 +169,19 @@ def evaluate(model, loader, device, image_size: int) -> dict[str, float]:
         totals["refined_iou"] += float(refined_iou.item()) * batch_size
         totals["token_acc"] += float(token_acc.item()) * batch_size
         count += batch_size
+    if world_size > 1:
+        packed = torch.tensor(
+            [totals["coarse_iou"], totals["refined_iou"], totals["token_acc"], float(count)],
+            device=device,
+            dtype=torch.float64,
+        )
+        dist.all_reduce(packed, op=dist.ReduceOp.SUM)
+        totals = {
+            "coarse_iou": float(packed[0].item()),
+            "refined_iou": float(packed[1].item()),
+            "token_acc": float(packed[2].item()),
+        }
+        count = int(packed[3].item())
     return {key: value / max(count, 1) for key, value in totals.items()}
 
 
@@ -117,6 +203,7 @@ def main() -> int:
     parser.add_argument("--uncertainty-loss-weight", type=float, default=2.0)
     parser.add_argument("--delta-reg-weight", type=float, default=0.01)
     parser.add_argument("--use-uncertainty-gate", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--grid-cache", type=Path, default=None)
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -125,30 +212,41 @@ def main() -> int:
     sample = torch.load(paths[0], map_location="cpu", weights_only=False)
     token_dim = int(sample["mask_hidden"].shape[-1])
 
-    device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
+    device, rank, _local_rank, world_size = setup_distributed(args.device)
+    cache_path = args.grid_cache or (args.input_dir / "token_refine_grid_cache.json")
+    grid_cache = load_or_build_grid_cache(paths, cache_path, rank, world_size)
+
     model = MaskTokenRefinementAdapter(
         token_dim=token_dim,
         hidden_size=args.hidden_size,
         use_uncertainty_gate=args.use_uncertainty_gate,
     ).to(device)
+    if world_size > 1:
+        model = DistributedDataParallel(model, device_ids=[device.index] if device.type == "cuda" else None)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
 
     train_loader = DataLoader(
         TokenDumpDataset(train_paths, args.image_size),
-        batch_sampler=grouped_batch_indices(train_paths, args.batch_size, True, args.seed),
+        batch_sampler=grouped_batch_indices(train_paths, args.batch_size, True, args.seed, grid_cache, rank, world_size),
         num_workers=args.num_workers,
         collate_fn=collate_token_dumps,
         pin_memory=device.type == "cuda",
     )
     val_loader = DataLoader(
         TokenDumpDataset(val_paths or train_paths, args.image_size),
-        batch_sampler=grouped_batch_indices(val_paths or train_paths, args.batch_size, False, args.seed),
+        batch_sampler=grouped_batch_indices(val_paths or train_paths, args.batch_size, False, args.seed, grid_cache, rank, world_size),
         num_workers=args.num_workers,
         collate_fn=collate_token_dumps,
         pin_memory=device.type == "cuda",
     )
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    if is_rank0(rank):
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        print(
+            f"[INFO] rank={rank} world_size={world_size} train_batches={len(train_loader)} val_batches={len(val_loader)}",
+            flush=True,
+        )
+    maybe_barrier(world_size)
     best_refined_iou = -1.0
     history = []
     for epoch in range(1, args.epochs + 1):
@@ -168,36 +266,49 @@ def main() -> int:
             total_loss += float(loss.item()) * mask_logits.shape[0]
             total_count += mask_logits.shape[0]
 
-        val_metrics = evaluate(model, val_loader, device, args.image_size)
+        if world_size > 1:
+            packed_loss = torch.tensor([total_loss, float(total_count)], device=device, dtype=torch.float64)
+            dist.all_reduce(packed_loss, op=dist.ReduceOp.SUM)
+            total_loss = float(packed_loss[0].item())
+            total_count = int(packed_loss[1].item())
+
+        eval_model = model.module if hasattr(model, "module") else model
+        val_metrics = evaluate(eval_model, val_loader, device, args.image_size, world_size)
         row = {
             "epoch": epoch,
             "train_loss": total_loss / max(total_count, 1),
             "val": val_metrics,
             "val_delta": val_metrics["refined_iou"] - val_metrics["coarse_iou"],
         }
-        history.append(row)
-        print(json.dumps(row), flush=True)
-        if val_metrics["refined_iou"] > best_refined_iou:
+        if is_rank0(rank):
+            history.append(row)
+            print(json.dumps(row), flush=True)
+        if is_rank0(rank) and val_metrics["refined_iou"] > best_refined_iou:
             best_refined_iou = val_metrics["refined_iou"]
             safe_config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
             torch.save(
                 {
-                    "model": model.state_dict(),
+                    "model": eval_model.state_dict(),
                     "config": safe_config,
                     "token_dim": token_dim,
                     "history": history,
                 },
                 args.output_dir / "adapter.pt",
             )
+        maybe_barrier(world_size)
 
-    report = {
-        "train_count": len(train_paths),
-        "val_count": len(val_paths),
-        "best_refined_iou": best_refined_iou,
-        "history": history,
-    }
-    (args.output_dir / "train_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps(report, indent=2))
+    if is_rank0(rank):
+        report = {
+            "train_count": len(train_paths),
+            "val_count": len(val_paths),
+            "best_refined_iou": best_refined_iou,
+            "history": history,
+            "world_size": world_size,
+        }
+        (args.output_dir / "train_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(json.dumps(report, indent=2))
+    if world_size > 1:
+        dist.destroy_process_group()
     return 0
 
 

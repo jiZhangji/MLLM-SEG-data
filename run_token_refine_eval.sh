@@ -11,6 +11,7 @@ python -m token_refine.eval_adapter_from_dumps \
   --output-dir "${OUTPUT_DIR}" \
   --limit "${LIMIT:-0}" \
   --batch-size "${BATCH_SIZE:-8}" \
+  --num-workers "${NUM_WORKERS:-0}" \
   --device "${DEVICE:-cuda}" \
-  --image-size "${IMAGE_SIZE:-896}"
-
+  --image-size "${IMAGE_SIZE:-896}" \
+  --grid-cache "${GRID_CACHE:-${INPUT_DIR}/token_refine_grid_cache.json}"

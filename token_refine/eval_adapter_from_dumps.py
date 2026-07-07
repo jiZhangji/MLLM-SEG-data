@@ -18,10 +18,37 @@ def read_grid_hw(path: Path) -> tuple[int, int]:
     return tuple(payload["grid_hw"])
 
 
-def grouped_batch_indices(paths: list[Path], batch_size: int) -> list[list[int]]:
+def build_grid_cache(paths: list[Path], cache_path: Path) -> dict[str, list[int]]:
+    return {str(path.resolve()): list(read_grid_hw(path)) for path in paths}
+
+
+def load_or_build_grid_cache(paths: list[Path], cache_path: Path) -> dict[str, tuple[int, int]]:
+    resolved_keys = {str(path.resolve()) for path in paths}
+    rebuild = True
+    if cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            grids = cached.get("grids", {})
+            rebuild = not resolved_keys.issubset(set(grids))
+        except Exception:
+            rebuild = True
+    if rebuild:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        grids = build_grid_cache(paths, cache_path)
+        tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps({"grids": grids}, indent=2), encoding="utf-8")
+        tmp_path.replace(cache_path)
+        print(f"[INFO] Wrote grid cache: {cache_path}", flush=True)
+    else:
+        print(f"[INFO] Using grid cache: {cache_path}", flush=True)
+    cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    return {key: tuple(value) for key, value in cached["grids"].items() if key in resolved_keys}
+
+
+def grouped_batch_indices(paths: list[Path], batch_size: int, grid_cache: dict[str, tuple[int, int]]) -> list[list[int]]:
     groups: dict[tuple[int, int], list[int]] = {}
     for index, path in enumerate(paths):
-        groups.setdefault(read_grid_hw(path), []).append(index)
+        groups.setdefault(grid_cache[str(path.resolve())], []).append(index)
     batches = []
     for indices in groups.values():
         for start in range(0, len(indices), batch_size):
@@ -39,6 +66,7 @@ def main() -> int:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--image-size", type=int, default=896)
+    parser.add_argument("--grid-cache", type=Path, default=None)
     args = parser.parse_args()
 
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
@@ -57,9 +85,11 @@ def main() -> int:
         paths = paths[: args.limit]
     if not paths:
         raise FileNotFoundError(f"No .pt dumps found in {args.input_dir}")
+    cache_path = args.grid_cache or (args.input_dir / "token_refine_grid_cache.json")
+    grid_cache = load_or_build_grid_cache(paths, cache_path)
     loader = DataLoader(
         TokenDumpDataset(paths, args.image_size),
-        batch_sampler=grouped_batch_indices(paths, args.batch_size),
+        batch_sampler=grouped_batch_indices(paths, args.batch_size, grid_cache),
         num_workers=args.num_workers,
         collate_fn=collate_token_dumps,
         pin_memory=device.type == "cuda",
