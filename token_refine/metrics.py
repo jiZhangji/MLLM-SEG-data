@@ -17,3 +17,10 @@ def binary_iou(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     union = (pred_bin | target_bin).float().sum(dim=(-2, -1)).clamp_min(1.0)
     return inter / union
 
+
+def binary_intersection_union(pred: torch.Tensor, target: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    pred_bin = pred.bool()
+    target_bin = target.bool()
+    inter = (pred_bin & target_bin).sum(dim=(-2, -1))
+    union = (pred_bin | target_bin).sum(dim=(-2, -1))
+    return inter, union

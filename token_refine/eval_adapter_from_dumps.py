@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from token_refine.data import TokenDumpDataset, collate_token_dumps
-from token_refine.metrics import binary_iou, logits_to_mask
+from token_refine.metrics import binary_intersection_union, binary_iou, logits_to_mask
 from token_refine.model import MaskTokenRefinementAdapter
 
 
@@ -107,8 +107,13 @@ def main() -> int:
             outputs = model(mask_hidden, mask_logits)
             coarse_mask = logits_to_mask(mask_logits, grid_hw, args.image_size)
             refined_mask = logits_to_mask(outputs["refined_logits"], grid_hw, args.image_size)
-            coarse_iou = binary_iou(coarse_mask >= 0.5, gt_mask >= 0.5)
-            refined_iou = binary_iou(refined_mask >= 0.5, gt_mask >= 0.5)
+            coarse_pred = coarse_mask >= 0.5
+            refined_pred = refined_mask >= 0.5
+            gt_pred = gt_mask >= 0.5
+            coarse_iou = binary_iou(coarse_pred, gt_pred)
+            refined_iou = binary_iou(refined_pred, gt_pred)
+            coarse_inter, coarse_union = binary_intersection_union(coarse_pred, gt_pred)
+            refined_inter, refined_union = binary_intersection_union(refined_pred, gt_pred)
             token_acc = (outputs["refined_logits"].argmax(dim=-1) == target_tokens).float().mean(dim=1)
             for index, name in enumerate(batch["name"]):
                 rows.append(
@@ -118,6 +123,10 @@ def main() -> int:
                         "coarse_iou": float(coarse_iou[index].item()),
                         "refined_iou": float(refined_iou[index].item()),
                         "delta": float((refined_iou[index] - coarse_iou[index]).item()),
+                        "coarse_intersection": int(coarse_inter[index].item()),
+                        "coarse_union": int(coarse_union[index].item()),
+                        "refined_intersection": int(refined_inter[index].item()),
+                        "refined_union": int(refined_union[index].item()),
                         "token_acc": float(token_acc[index].item()),
                     }
                 )
@@ -128,11 +137,32 @@ def main() -> int:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+    coarse_intersection = sum(row["coarse_intersection"] for row in rows)
+    coarse_union = sum(row["coarse_union"] for row in rows)
+    refined_intersection = sum(row["refined_intersection"] for row in rows)
+    refined_union = sum(row["refined_union"] for row in rows)
+    coarse_mean_iou = sum(row["coarse_iou"] for row in rows) / max(len(rows), 1)
+    refined_mean_iou = sum(row["refined_iou"] for row in rows) / max(len(rows), 1)
+    coarse_ciou = coarse_intersection / coarse_union if coarse_union > 0 else None
+    refined_ciou = refined_intersection / refined_union if refined_union > 0 else None
     summary = {
         "samples": len(rows),
-        "coarse_iou": sum(row["coarse_iou"] for row in rows) / max(len(rows), 1),
-        "refined_iou": sum(row["refined_iou"] for row in rows) / max(len(rows), 1),
-        "delta": sum(row["delta"] for row in rows) / max(len(rows), 1),
+        "coarse_iou": coarse_mean_iou,
+        "refined_iou": refined_mean_iou,
+        "delta": refined_mean_iou - coarse_mean_iou,
+        "coarse_mean_iou": coarse_mean_iou,
+        "refined_mean_iou": refined_mean_iou,
+        "mean_iou_delta": refined_mean_iou - coarse_mean_iou,
+        "coarse_gIoU": coarse_mean_iou,
+        "refined_gIoU": refined_mean_iou,
+        "gIoU_delta": refined_mean_iou - coarse_mean_iou,
+        "coarse_cIoU": coarse_ciou,
+        "refined_cIoU": refined_ciou,
+        "cIoU_delta": refined_ciou - coarse_ciou if coarse_ciou is not None and refined_ciou is not None else None,
+        "coarse_total_intersection": coarse_intersection,
+        "coarse_total_union": coarse_union,
+        "refined_total_intersection": refined_intersection,
+        "refined_total_union": refined_union,
         "token_acc": sum(row["token_acc"] for row in rows) / max(len(rows), 1),
         "rows_csv": str(csv_path),
     }
