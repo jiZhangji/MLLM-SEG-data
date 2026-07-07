@@ -326,6 +326,30 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
     b = s.get("baseline", {})
     r = s.get("rstamp", {})
     c = report.get("comparison", {})
+    if report["settings"].get("baseline_only"):
+        lines = [
+            "# STAMP IoU Evaluation Report",
+            "",
+            "> Baseline-only official-aligned evaluation.",
+            "",
+            "| Metric | Baseline |",
+            "|---|---:|",
+            f"| mean_iou | {fmt(b.get('mean_iou'))} |",
+            f"| gIoU | {fmt(b.get('gIoU'))} |",
+            f"| cIoU | {fmt(b.get('cIoU'))} |",
+            f"| median_iou | {fmt(b.get('median_iou'))} |",
+            f"| valid_mask_mean_iou | {fmt(b.get('valid_mask_mean_iou'))} |",
+            f"| iou_ge_0_5_rate | {fmt(b.get('iou_ge_0_5_rate'))} |",
+            f"| no_mask_rate | {fmt(b.get('no_mask_rate'))} |",
+            f"| empty_pred_rate | {fmt(b.get('empty_pred_rate'))} |",
+            "",
+            "## Files",
+            "",
+            f"- baseline_csv: `{report['files']['baseline_csv']}`",
+            f"- json: `{report['files']['json']}`",
+        ]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return
     lines = [
         "# Smoke IoU Evaluation Report",
         "",
@@ -378,6 +402,7 @@ def main() -> int:
     )
     parser.add_argument("--baseline-use-prior", action="store_true")
     parser.add_argument("--rstamp-use-prior", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--baseline-only", action="store_true")
     args = parser.parse_args()
 
     root = args.root.expanduser().resolve()
@@ -397,7 +422,9 @@ def main() -> int:
     if os.environ.get("STAMP_DISABLE_CUDNN", "0") == "1":
         torch.backends.cudnn.enabled = False
 
-    required = [stamp_code_dir, baseline_model, rstamp_model, baseline_json, rstamp_json]
+    required = [stamp_code_dir, baseline_model, baseline_json]
+    if not args.baseline_only:
+        required.extend([rstamp_model, rstamp_json])
     for p in required:
         if not p.exists():
             raise FileNotFoundError(str(p))
@@ -415,41 +442,45 @@ def main() -> int:
         max_pixels=args.max_pixels,
         prompt_mode=args.prompt_mode,
     )
-    rstamp_rows = evaluate_run(
-        run_name="rstamp",
-        model_path=rstamp_model,
-        json_path=rstamp_json,
-        root=root,
-        stamp_code_dir=stamp_code_dir,
-        use_prior=args.rstamp_use_prior,
-        limit=args.limit,
-        min_pixels=args.min_pixels,
-        max_pixels=args.max_pixels,
-        prompt_mode=args.prompt_mode,
-    )
+    rstamp_rows = []
+    if not args.baseline_only:
+        rstamp_rows = evaluate_run(
+            run_name="rstamp",
+            model_path=rstamp_model,
+            json_path=rstamp_json,
+            root=root,
+            stamp_code_dir=stamp_code_dir,
+            use_prior=args.rstamp_use_prior,
+            limit=args.limit,
+            min_pixels=args.min_pixels,
+            max_pixels=args.max_pixels,
+            prompt_mode=args.prompt_mode,
+        )
 
     baseline_summary = summarize(baseline_rows)
-    rstamp_summary = summarize(rstamp_rows)
+    rstamp_summary = summarize(rstamp_rows) if not args.baseline_only else None
     comparison = {}
-    for key in [
-        "mean_iou",
-        "gIoU",
-        "cIoU",
-        "median_iou",
-        "valid_mask_mean_iou",
-        "iou_ge_0_5_rate",
-        "no_mask_rate",
-        "empty_pred_rate",
-    ]:
-        if baseline_summary.get(key) is not None and rstamp_summary.get(key) is not None:
-            comparison[f"{key}_delta"] = rstamp_summary[key] - baseline_summary[key]
+    if rstamp_summary is not None:
+        for key in [
+            "mean_iou",
+            "gIoU",
+            "cIoU",
+            "median_iou",
+            "valid_mask_mean_iou",
+            "iou_ge_0_5_rate",
+            "no_mask_rate",
+            "empty_pred_rate",
+        ]:
+            if baseline_summary.get(key) is not None and rstamp_summary.get(key) is not None:
+                comparison[f"{key}_delta"] = rstamp_summary[key] - baseline_summary[key]
 
     baseline_csv = output_dir / "baseline_per_sample.csv"
     rstamp_csv = output_dir / "rstamp_per_sample.csv"
     json_path = output_dir / "smoke_iou_comparison.json"
     md_path = output_dir / "smoke_iou_comparison.md"
     write_rows_csv(baseline_csv, baseline_rows)
-    write_rows_csv(rstamp_csv, rstamp_rows)
+    if not args.baseline_only:
+        write_rows_csv(rstamp_csv, rstamp_rows)
 
     report = {
         "root": str(root),
@@ -464,10 +495,10 @@ def main() -> int:
             "prompt_mode": args.prompt_mode,
             "min_pixels": args.min_pixels,
             "max_pixels": args.max_pixels,
+            "baseline_only": args.baseline_only,
         },
         "summary": {
             "baseline": baseline_summary,
-            "rstamp": rstamp_summary,
         },
         "comparison": comparison,
         "files": {
@@ -477,6 +508,9 @@ def main() -> int:
             "markdown": str(md_path),
         },
     }
+    if rstamp_summary is not None:
+        report["summary"]["rstamp"] = rstamp_summary
+        report["files"]["rstamp_csv"] = str(rstamp_csv)
     json_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     write_report(md_path, report)
 

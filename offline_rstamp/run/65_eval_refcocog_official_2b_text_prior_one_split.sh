@@ -14,6 +14,7 @@ MODEL_NAME="${MODEL_NAME:-${MLLM_SEG_ROOT}/models/STAMP-2B-uni}"
 STAMP_DATA="${MLLM_SEG_ROOT}/code/STAMP/playground/data"
 SPLIT="${SPLIT:-refcocog_val}"
 EVAL_LIMIT="${EVAL_LIMIT:-0}"
+BASELINE_ONLY="${BASELINE_ONLY:-1}"
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export TOKENIZERS_PARALLELISM=false
@@ -32,6 +33,12 @@ echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "STAMP_MIN_PIXELS=${STAMP_MIN_PIXELS}"
 echo "STAMP_MAX_PIXELS=${STAMP_MAX_PIXELS}"
 echo "STAMP_PROMPT_MODE=${STAMP_PROMPT_MODE}"
+echo "BASELINE_ONLY=${BASELINE_ONLY}"
+
+BASELINE_ONLY_FLAG=()
+if [[ "${BASELINE_ONLY}" == "1" ]]; then
+  BASELINE_ONLY_FLAG+=(--baseline-only)
+fi
 
 python "${TOOL_REPO}/offline_rstamp/scripts/eval_smoke_iou.py" \
   --root "${MLLM_SEG_ROOT}" \
@@ -44,7 +51,8 @@ python "${TOOL_REPO}/offline_rstamp/scripts/eval_smoke_iou.py" \
   --limit "${EVAL_LIMIT}" \
   --min-pixels "${STAMP_MIN_PIXELS}" \
   --max-pixels "${STAMP_MAX_PIXELS}" \
-  --prompt-mode "${STAMP_PROMPT_MODE}"
+  --prompt-mode "${STAMP_PROMPT_MODE}" \
+  "${BASELINE_ONLY_FLAG[@]}"
 
 echo "Report:"
 echo "${MLLM_SEG_ROOT}/outputs/eval_refcocog_official_aligned_2b_text_prior/${SPLIT}/smoke_iou_comparison.md"
