@@ -31,6 +31,10 @@ def token_targets_from_mask(mask: torch.Tensor, grid_hw: tuple[int, int]) -> tor
     return (target >= 0.5).long().flatten()
 
 
+def token_soft_targets_from_mask(mask: torch.Tensor, grid_hw: tuple[int, int]) -> torch.Tensor:
+    return F.interpolate(mask.unsqueeze(0), size=grid_hw, mode="area").squeeze(0).squeeze(0).flatten()
+
+
 class TokenDumpDataset(Dataset):
     def __init__(self, dump_paths: list[Path], image_size: int = 896) -> None:
         self.dump_paths = dump_paths
@@ -52,6 +56,7 @@ class TokenDumpDataset(Dataset):
             "mask_hidden": payload["mask_hidden"].squeeze(0).float(),
             "gt_mask": gt_mask,
             "target_tokens": token_targets_from_mask(gt_mask, grid_hw),
+            "target_soft": token_soft_targets_from_mask(gt_mask, grid_hw),
             "grid_hw": grid_hw,
         }
 
@@ -67,6 +72,6 @@ def collate_token_dumps(items: list[dict[str, object]]) -> dict[str, object]:
         "mask_hidden": torch.stack([item["mask_hidden"] for item in items]),
         "gt_mask": torch.stack([item["gt_mask"] for item in items]),
         "target_tokens": torch.stack([item["target_tokens"] for item in items]),
+        "target_soft": torch.stack([item["target_soft"] for item in items]),
         "grid_hw": grid_hw,
     }
-
