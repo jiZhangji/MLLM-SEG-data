@@ -14,12 +14,13 @@ fi
 
 MLLM_SEG_ROOT="${MLLM_SEG_ROOT:-$(cd "${ROOT_DIR}/.." && pwd)}"
 STAMP_CODE_DIR="${STAMP_CODE_DIR:-${MLLM_SEG_ROOT}/code/STAMP}"
-OUTPUT_DIR="${OUTPUT_DIR:-${MLLM_SEG_ROOT}/outputs/online_token_refine_inspection}"
 
-python "${ROOT_DIR}/offline_rstamp/scripts/inspect_stamp_online_refine_points.py" \
-  --stamp-code-dir "${STAMP_CODE_DIR}" \
-  --output-dir "${OUTPUT_DIR}"
+python "${ROOT_DIR}/offline_rstamp/scripts/patch_stamp_online_token_refine.py" \
+  --tool-repo "${ROOT_DIR}" \
+  --stamp-code-dir "${STAMP_CODE_DIR}"
 
-echo "Inspection files:"
-echo "  ${OUTPUT_DIR}/online_refine_inspection.json"
-find "${OUTPUT_DIR}" -maxdepth 1 -name "*.snippets.txt" -print | sort
+echo "Patched STAMP online token refinement."
+echo "Enable during STAMP training with:"
+echo "  STAMP_ONLINE_TOKEN_REFINE=1"
+echo "  STAMP_FREEZE_FOR_ONLINE_REFINE=1"
+echo "  STAMP_REFINE_CALIBRATE=1"
