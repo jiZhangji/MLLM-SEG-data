@@ -193,6 +193,7 @@ def patch_training_args(text: str) -> str:
         "save_steps=1000,": 'save_steps=int(os.environ.get("STAMP_SAVE_STEPS", "200")),',
         'report_to="wandb",': 'report_to=os.environ.get("STAMP_REPORT_TO", "none"),',
         "max_length=4096,": 'max_length=int(os.environ.get("STAMP_MAX_LENGTH", "2048")),',
+        "gradient_checkpointing=True,": 'gradient_checkpointing=os.environ.get("STAMP_GRADIENT_CHECKPOINTING", "0") == "1",',
     }
     for old, new in replacements.items():
         text = text.replace(old, new)
@@ -285,6 +286,49 @@ def patch_file(path: Path) -> None:
     print(f"Backup:  {backup}")
 
 
+def patch_seg_trainer_speed(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    backup = path.with_suffix(path.suffix + ".bak_rstamp_local")
+    if not backup.exists():
+        backup.write_text(text, encoding="utf-8")
+
+    text = text.replace(
+        "        torch.cuda.empty_cache()\n",
+        "        if os.environ.get(\"STAMP_EMPTY_CACHE_EACH_STEP\", \"0\") == \"1\":\n"
+        "            torch.cuda.empty_cache()\n",
+        1,
+    )
+
+    old_lm = """        # This call computes the standard cross-entropy loss on the 'text' field
+        # It internally uses inputs['input_ids'] and inputs['labels']
+        outputs = super().compute_loss(model, inputs, return_outputs=True)
+        loss_lm = outputs[0]
+"""
+    new_lm = """        # This call computes the standard cross-entropy loss on the 'text' field.
+        # Head-only uncertainty experiments can skip it because the language
+        # backbone is frozen and only the segmentation head is trainable.
+        if os.environ.get("STAMP_SKIP_LM_LOSS", "0") == "1":
+            outputs = None
+            loss_lm = torch.tensor(0.0, device=model.device)
+        else:
+            outputs = super().compute_loss(model, inputs, return_outputs=True)
+            loss_lm = outputs[0]
+"""
+    text = text.replace(old_lm, new_lm, 1)
+
+    text = text.replace(
+        "            if IS_MAIN_PROCESS:\n"
+        "                import matplotlib.pyplot as plt\n",
+        "            if IS_MAIN_PROCESS and os.environ.get(\"STAMP_SAVE_SEG_VIS\", \"0\") == \"1\":\n"
+        "                import matplotlib.pyplot as plt\n",
+        1,
+    )
+
+    path.write_text(text, encoding="utf-8")
+    print(f"Patched speed knobs: {path}")
+    print(f"Backup:              {backup}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--stamp-code-dir", required=True, type=Path)
@@ -293,6 +337,10 @@ def main() -> int:
     if not target.exists():
         raise FileNotFoundError(target)
     patch_file(target)
+    seg_trainer = args.stamp_code_dir / "train" / "seg_trainer.py"
+    if not seg_trainer.exists():
+        raise FileNotFoundError(seg_trainer)
+    patch_seg_trainer_speed(seg_trainer)
     return 0
 
 
