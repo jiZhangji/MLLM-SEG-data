@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 
-from token_refine.data import TokenDumpDataset, collate_token_dumps
+from token_refine.data import CachedTokenDataset, TokenDumpDataset, build_token_cache, collate_token_dumps, load_token_cache
 from token_refine.metrics import binary_iou, logits_to_mask
 from token_refine.model import MaskTokenRefinementAdapter
 
@@ -36,6 +36,14 @@ def find_dump_paths(input_dir: Path, limit: int) -> list[Path]:
 def split_paths(paths: list[Path], val_fraction: float, seed: int) -> tuple[list[Path], list[Path]]:
     rng = random.Random(seed)
     shuffled = list(paths)
+    rng.shuffle(shuffled)
+    val_count = max(1, int(round(len(shuffled) * val_fraction))) if len(shuffled) > 1 else 0
+    return shuffled[val_count:], shuffled[:val_count]
+
+
+def split_items(items: list[dict[str, object]], val_fraction: float, seed: int) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    rng = random.Random(seed)
+    shuffled = list(items)
     rng.shuffle(shuffled)
     val_count = max(1, int(round(len(shuffled) * val_fraction))) if len(shuffled) > 1 else 0
     return shuffled[val_count:], shuffled[:val_count]
@@ -159,6 +167,35 @@ def grouped_batch_indices(
     return batches
 
 
+def grouped_batch_indices_for_items(
+    items: list[dict[str, object]],
+    batch_size: int,
+    shuffle: bool,
+    seed: int,
+    rank: int = 0,
+    world_size: int = 1,
+) -> list[list[int]]:
+    groups: dict[tuple[int, int], list[int]] = {}
+    for index, item in enumerate(items):
+        groups.setdefault(tuple(item["grid_hw"]), []).append(index)
+
+    rng = random.Random(seed)
+    batches = []
+    for indices in groups.values():
+        if shuffle:
+            rng.shuffle(indices)
+        for start in range(0, len(indices), batch_size):
+            batches.append(indices[start : start + batch_size])
+    if shuffle:
+        rng.shuffle(batches)
+    if world_size > 1 and batches:
+        target_len = math.ceil(len(batches) / world_size) * world_size
+        while len(batches) < target_len:
+            batches.append(list(batches[len(batches) % len(batches)]))
+        batches = batches[rank::world_size]
+    return batches
+
+
 def token_loss(
     outputs: dict[str, torch.Tensor],
     target_tokens: torch.Tensor,
@@ -202,14 +239,21 @@ def evaluate(
         mask_logits = batch["mask_logits"].to(device)
         mask_hidden = batch["mask_hidden"].to(device)
         target_tokens = batch["target_tokens"].to(device)
-        gt_mask = batch["gt_mask"].to(device)
         grid_hw = batch["grid_hw"]
         outputs = model(mask_hidden, mask_logits)
 
-        coarse_mask = logits_to_mask(mask_logits, grid_hw, image_size)
-        refined_mask = logits_to_mask(outputs["refined_logits"], grid_hw, image_size)
-        coarse_iou = binary_iou(coarse_mask >= 0.5, gt_mask >= 0.5).mean()
-        refined_iou = binary_iou(refined_mask >= 0.5, gt_mask >= 0.5).mean()
+        if "gt_mask" in batch:
+            gt_mask = batch["gt_mask"].to(device)
+            coarse_mask = logits_to_mask(mask_logits, grid_hw, image_size)
+            refined_mask = logits_to_mask(outputs["refined_logits"], grid_hw, image_size)
+            coarse_iou = binary_iou(coarse_mask >= 0.5, gt_mask >= 0.5).mean()
+            refined_iou = binary_iou(refined_mask >= 0.5, gt_mask >= 0.5).mean()
+        else:
+            target_bool = target_tokens.bool()
+            coarse_bool = mask_logits.argmax(dim=-1).bool()
+            refined_bool = outputs["refined_logits"].argmax(dim=-1).bool()
+            coarse_iou = binary_iou(coarse_bool, target_bool).mean()
+            refined_iou = binary_iou(refined_bool, target_bool).mean()
         token_acc = (outputs["refined_logits"].argmax(dim=-1) == target_tokens).float().mean()
 
         batch_size = mask_logits.shape[0]
@@ -239,6 +283,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--cache-file", type=Path, default=None)
+    parser.add_argument("--build-token-cache-only", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
@@ -262,13 +308,38 @@ def main() -> int:
     torch.manual_seed(args.seed)
     started_at = time.time()
     paths = find_dump_paths(args.input_dir, args.limit)
-    train_paths, val_paths = split_paths(paths, args.val_fraction, args.seed)
-    sample = torch.load(paths[0], map_location="cpu", weights_only=False)
-    token_dim = int(sample["mask_hidden"].shape[-1])
 
     device, rank, _local_rank, world_size = setup_distributed(args.device)
-    cache_path = args.grid_cache or (args.input_dir / "token_refine_grid_cache.json")
-    grid_cache = load_or_build_grid_cache(paths, cache_path, rank, world_size, started_at)
+    token_cache = None
+    cache_items = None
+    if args.cache_file is not None:
+        if is_rank0(rank) and (args.build_token_cache_only or not args.cache_file.exists()):
+            if tqdm is not None and args.progress:
+                progress = lambda iterable: tqdm(iterable, desc="build token cache", dynamic_ncols=True)
+            else:
+                progress = None
+            print(f"[INFO] Building token cache: {args.cache_file}", flush=True)
+            build_token_cache(paths, args.cache_file, args.image_size, progress)
+            print(f"[INFO] Wrote token cache: {args.cache_file}", flush=True)
+        maybe_barrier(world_size, device)
+        if args.build_token_cache_only:
+            if world_size > 1:
+                dist.destroy_process_group()
+            return 0
+        print(f"[INFO] Loading token cache: {args.cache_file}", flush=True)
+        token_cache = load_token_cache(args.cache_file)
+        cache_items = token_cache["items"]
+        if args.limit > 0:
+            cache_items = cache_items[: args.limit]
+        train_items, val_items = split_items(cache_items, args.val_fraction, args.seed)
+        token_dim = int(cache_items[0]["mask_hidden"].shape[-1])
+        grid_cache = None
+    else:
+        train_paths, val_paths = split_paths(paths, args.val_fraction, args.seed)
+        sample = torch.load(paths[0], map_location="cpu", weights_only=False)
+        token_dim = int(sample["mask_hidden"].shape[-1])
+        cache_path = args.grid_cache or (args.input_dir / "token_refine_grid_cache.json")
+        grid_cache = load_or_build_grid_cache(paths, cache_path, rank, world_size, started_at)
     print(f"[INFO] rank={rank} world_size={world_size} device={device}", flush=True)
     if args.build_cache_only:
         if is_rank0(rank):
@@ -287,20 +358,40 @@ def main() -> int:
         model = DistributedDataParallel(model, device_ids=[device.index] if device.type == "cuda" else None)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
 
-    train_loader = DataLoader(
-        TokenDumpDataset(train_paths, args.image_size),
-        batch_sampler=grouped_batch_indices(train_paths, args.batch_size, True, args.seed, grid_cache, rank, world_size),
-        num_workers=args.num_workers,
-        collate_fn=collate_token_dumps,
-        pin_memory=device.type == "cuda",
-    )
-    val_loader = DataLoader(
-        TokenDumpDataset(val_paths or train_paths, args.image_size),
-        batch_sampler=grouped_batch_indices(val_paths or train_paths, args.batch_size, False, args.seed, grid_cache, rank, world_size),
-        num_workers=args.num_workers,
-        collate_fn=collate_token_dumps,
-        pin_memory=device.type == "cuda",
-    )
+    if args.cache_file is not None:
+        train_loader = DataLoader(
+            CachedTokenDataset(train_items),
+            batch_sampler=grouped_batch_indices_for_items(train_items, args.batch_size, True, args.seed, rank, world_size),
+            num_workers=args.num_workers,
+            collate_fn=collate_token_dumps,
+            pin_memory=device.type == "cuda",
+        )
+        val_loader = DataLoader(
+            CachedTokenDataset(val_items or train_items),
+            batch_sampler=grouped_batch_indices_for_items(val_items or train_items, args.batch_size, False, args.seed, rank, world_size),
+            num_workers=args.num_workers,
+            collate_fn=collate_token_dumps,
+            pin_memory=device.type == "cuda",
+        )
+        train_count = len(train_items)
+        val_count = len(val_items)
+    else:
+        train_loader = DataLoader(
+            TokenDumpDataset(train_paths, args.image_size),
+            batch_sampler=grouped_batch_indices(train_paths, args.batch_size, True, args.seed, grid_cache, rank, world_size),
+            num_workers=args.num_workers,
+            collate_fn=collate_token_dumps,
+            pin_memory=device.type == "cuda",
+        )
+        val_loader = DataLoader(
+            TokenDumpDataset(val_paths or train_paths, args.image_size),
+            batch_sampler=grouped_batch_indices(val_paths or train_paths, args.batch_size, False, args.seed, grid_cache, rank, world_size),
+            num_workers=args.num_workers,
+            collate_fn=collate_token_dumps,
+            pin_memory=device.type == "cuda",
+        )
+        train_count = len(train_paths)
+        val_count = len(val_paths)
 
     if is_rank0(rank):
         args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -380,8 +471,8 @@ def main() -> int:
 
     if is_rank0(rank):
         report = {
-            "train_count": len(train_paths),
-            "val_count": len(val_paths),
+            "train_count": train_count,
+            "val_count": val_count,
             "best_refined_iou": best_refined_iou,
             "history": history,
             "world_size": world_size,
