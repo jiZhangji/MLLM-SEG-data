@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+if [[ -f "${ROOT_DIR}/offline_rstamp/paths.local.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${ROOT_DIR}/offline_rstamp/paths.local.sh"
+else
+  # shellcheck disable=SC1091
+  source "${ROOT_DIR}/offline_rstamp/paths.example.sh"
+fi
+
+MLLM_SEG_ROOT="${MLLM_SEG_ROOT:-$(cd "${ROOT_DIR}/.." && pwd)}"
+STAMP_CODE_DIR="${STAMP_CODE_DIR:-${MLLM_SEG_ROOT}/code/STAMP}"
+MODEL_NAME="${MODEL_NAME:-${MLLM_SEG_ROOT}/models/STAMP-2B-uni}"
+OUT_DIR="${OUT_DIR:-${MLLM_SEG_ROOT}/outputs/stamp_uncertainty_mask_head_2gpu}"
+
+python "${ROOT_DIR}/offline_rstamp/scripts/patch_stamp_local_training.py" \
+  --stamp-code-dir "${STAMP_CODE_DIR}"
+
+python "${ROOT_DIR}/offline_rstamp/scripts/patch_stamp_uncertainty_mask_head.py" \
+  --tool-repo "${ROOT_DIR}" \
+  --stamp-code-dir "${STAMP_CODE_DIR}"
+
+cd "${STAMP_CODE_DIR}"
+
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
+export NPROC_PER_NODE="${NPROC_PER_NODE:-2}"
+export MODEL_NAME
+export OUT_DIR
+export STAMP_UNCERTAINTY_MASK_HEAD="${STAMP_UNCERTAINTY_MASK_HEAD:-1}"
+export STAMP_FREEZE_FOR_UNCERTAINTY_HEAD="${STAMP_FREEZE_FOR_UNCERTAINTY_HEAD:-1}"
+export STAMP_REFINE_USE_GATE="${STAMP_REFINE_USE_GATE:-0}"
+export STAMP_REFINE_HIDDEN_SIZE="${STAMP_REFINE_HIDDEN_SIZE:-128}"
+
+export STAMP_JSON_DIR="${STAMP_JSON_DIR:-playground/data/json_files_baseline}"
+export STAMP_JSON_FILES="${STAMP_JSON_FILES:-refcocog_formatted_all_sentences_doubled_mp.json}"
+export STAMP_REPEAT_NON_LLAVA="${STAMP_REPEAT_NON_LLAVA:-1}"
+export STAMP_MAX_SAMPLES="${STAMP_MAX_SAMPLES:-0}"
+export STAMP_NUM_EPOCHS="${STAMP_NUM_EPOCHS:-1}"
+export STAMP_BATCH_SIZE="${STAMP_BATCH_SIZE:-2}"
+export STAMP_GRAD_ACCUM="${STAMP_GRAD_ACCUM:-1}"
+export STAMP_LR="${STAMP_LR:-3e-4}"
+export STAMP_LOGGING_STEPS="${STAMP_LOGGING_STEPS:-1}"
+export STAMP_SAVE_STEPS="${STAMP_SAVE_STEPS:-1000}"
+export STAMP_REPORT_TO="${STAMP_REPORT_TO:-none}"
+export STAMP_MAX_LENGTH="${STAMP_MAX_LENGTH:-4096}"
+export STAMP_ATTN_IMPL="${STAMP_ATTN_IMPL:-sdpa}"
+export STAMP_MIN_PIXELS="${STAMP_MIN_PIXELS:-802816}"
+export STAMP_MAX_PIXELS="${STAMP_MAX_PIXELS:-1003520}"
+export STAMP_DISABLE_CUDNN="${STAMP_DISABLE_CUDNN:-1}"
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+export WANDB_DISABLED="${WANDB_DISABLED:-true}"
+
+echo "Uncertainty-aware mask head training:"
+echo "  STAMP_CODE_DIR=${STAMP_CODE_DIR}"
+echo "  MODEL_NAME=${MODEL_NAME}"
+echo "  OUT_DIR=${OUT_DIR}"
+echo "  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+echo "  NPROC_PER_NODE=${NPROC_PER_NODE}"
+echo "  STAMP_BATCH_SIZE=${STAMP_BATCH_SIZE}"
+echo "  STAMP_GRAD_ACCUM=${STAMP_GRAD_ACCUM}"
+echo "  STAMP_MAX_SAMPLES=${STAMP_MAX_SAMPLES}"
+
+torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" -m train.main_uni

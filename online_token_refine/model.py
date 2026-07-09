@@ -72,6 +72,68 @@ class OnlineCalibratedResidualRefiner(nn.Module):
         }
 
 
+class UncertaintyAwareMaskHead(nn.Module):
+    """Enhanced STAMP mask head: mask_hidden -> uncertainty-aware final logits.
+
+    This is the cleaner online variant. It does not take STAMP's previous
+    `bi_logits` as an external input. Instead, it extends the original linear
+    mask classifier with an uncertainty branch and a hidden-state residual head.
+    """
+
+    def __init__(
+        self,
+        token_dim: int,
+        hidden_size: int = 128,
+        use_uncertainty_gate: bool = False,
+    ) -> None:
+        super().__init__()
+        self.use_uncertainty_gate = use_uncertainty_gate
+        self.base_classifier = nn.Linear(token_dim, 1)
+        self.uncertainty_head = nn.Sequential(
+            nn.LayerNorm(token_dim),
+            nn.Linear(token_dim, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, 1),
+        )
+        self.residual_head = nn.Sequential(
+            nn.LayerNorm(token_dim + 2),
+            nn.Linear(token_dim + 2, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, 1),
+        )
+
+    @torch.no_grad()
+    def initialize_from_classifier(self, classifier: nn.Linear) -> None:
+        self.base_classifier.weight.copy_(classifier.weight)
+        if classifier.bias is not None and self.base_classifier.bias is not None:
+            self.base_classifier.bias.copy_(classifier.bias)
+
+    def forward(self, mask_hidden: torch.Tensor) -> dict[str, torch.Tensor]:
+        mask_hidden = mask_hidden.float()
+        base_binary_logits = self.base_classifier(mask_hidden)
+        fg_prob = torch.sigmoid(base_binary_logits)
+        logit_uncertainty = 1.0 - torch.abs(2.0 * fg_prob - 1.0)
+        learned_uncertainty = torch.sigmoid(self.uncertainty_head(mask_hidden))
+        uncertainty = 0.5 * (logit_uncertainty + learned_uncertainty)
+        features = torch.cat([mask_hidden, fg_prob, uncertainty], dim=-1)
+        delta_binary_logits = self.residual_head(features)
+        gate = uncertainty if self.use_uncertainty_gate else torch.ones_like(uncertainty)
+        refined_binary_logits = base_binary_logits + gate * delta_binary_logits
+        refined_logits = torch.cat([-refined_binary_logits, refined_binary_logits], dim=-1)
+        return {
+            "base_binary_logits": base_binary_logits,
+            "refined_binary_logits": refined_binary_logits,
+            "refined_logits": refined_logits,
+            "delta_binary_logits": delta_binary_logits,
+            "fg_prob": fg_prob,
+            "uncertainty": uncertainty,
+            "learned_uncertainty": learned_uncertainty,
+            "logit_uncertainty": logit_uncertainty,
+        }
+
+
 def token_refine_loss(
     refined_logits: torch.Tensor,
     target_tokens: torch.Tensor,
