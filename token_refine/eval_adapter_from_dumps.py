@@ -91,6 +91,7 @@ def main() -> int:
         token_dim=int(ckpt["token_dim"]),
         hidden_size=int(config.get("hidden_size", 128)),
         use_uncertainty_gate=str(config.get("use_uncertainty_gate", "True")).lower() != "false",
+        trainable_logit_calibration=str(config.get("trainable_logit_calibration", "False")).lower() == "true",
     ).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()

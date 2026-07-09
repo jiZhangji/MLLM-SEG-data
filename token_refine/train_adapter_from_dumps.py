@@ -253,6 +253,7 @@ def main() -> int:
     parser.add_argument("--uncertainty-loss-weight", type=float, default=2.0)
     parser.add_argument("--delta-reg-weight", type=float, default=0.01)
     parser.add_argument("--use-uncertainty-gate", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--trainable-logit-calibration", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--grid-cache", type=Path, default=None)
     parser.add_argument("--build-cache-only", action="store_true")
     parser.add_argument("--progress", action=argparse.BooleanOptionalAction, default=True)
@@ -280,6 +281,7 @@ def main() -> int:
         token_dim=token_dim,
         hidden_size=args.hidden_size,
         use_uncertainty_gate=args.use_uncertainty_gate,
+        trainable_logit_calibration=args.trainable_logit_calibration,
     ).to(device)
     if world_size > 1:
         model = DistributedDataParallel(model, device_ids=[device.index] if device.type == "cuda" else None)

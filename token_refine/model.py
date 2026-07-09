@@ -12,9 +12,17 @@ class MaskTokenRefinementAdapter(nn.Module):
         token_dim: int,
         hidden_size: int = 128,
         use_uncertainty_gate: bool = True,
+        trainable_logit_calibration: bool = False,
     ) -> None:
         super().__init__()
         self.use_uncertainty_gate = use_uncertainty_gate
+        self.trainable_logit_calibration = trainable_logit_calibration
+        if trainable_logit_calibration:
+            self.logit_scale = nn.Parameter(torch.zeros(2))
+            self.logit_bias = nn.Parameter(torch.zeros(2))
+        else:
+            self.register_buffer("logit_scale", torch.zeros(2), persistent=False)
+            self.register_buffer("logit_bias", torch.zeros(2), persistent=False)
         self.mlp = nn.Sequential(
             nn.Linear(token_dim + 4, hidden_size),
             nn.GELU(),
@@ -24,13 +32,15 @@ class MaskTokenRefinementAdapter(nn.Module):
         )
 
     def forward(self, mask_hidden: torch.Tensor, mask_logits: torch.Tensor) -> dict[str, torch.Tensor]:
-        fg_prob = torch.softmax(mask_logits, dim=-1)[..., 1:2]
+        base_logits = mask_logits * torch.exp(self.logit_scale).view(1, 1, 2) + self.logit_bias.view(1, 1, 2)
+        fg_prob = torch.softmax(base_logits, dim=-1)[..., 1:2]
         uncertainty = 1.0 - torch.abs(2.0 * fg_prob - 1.0)
-        features = torch.cat([mask_hidden, mask_logits, fg_prob, uncertainty], dim=-1)
+        features = torch.cat([mask_hidden, base_logits, fg_prob, uncertainty], dim=-1)
         delta_logits = self.mlp(features)
         gate = uncertainty if self.use_uncertainty_gate else torch.ones_like(uncertainty)
-        refined_logits = mask_logits + gate * delta_logits
+        refined_logits = base_logits + gate * delta_logits
         return {
+            "base_logits": base_logits,
             "refined_logits": refined_logits,
             "delta_logits": delta_logits,
             "uncertainty": uncertainty,
