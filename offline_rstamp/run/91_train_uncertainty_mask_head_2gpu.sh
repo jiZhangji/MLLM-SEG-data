@@ -4,6 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
+USER_MLLM_SEG_ROOT="${MLLM_SEG_ROOT:-}"
+USER_STAMP_CODE_DIR="${STAMP_CODE_DIR:-}"
+USER_MODEL_NAME="${MODEL_NAME:-}"
+USER_OUT_DIR="${OUT_DIR:-}"
+
 if [[ -f "${ROOT_DIR}/offline_rstamp/paths.local.sh" ]]; then
   # shellcheck disable=SC1091
   source "${ROOT_DIR}/offline_rstamp/paths.local.sh"
@@ -12,10 +17,14 @@ else
   source "${ROOT_DIR}/offline_rstamp/paths.example.sh"
 fi
 
-MLLM_SEG_ROOT="${MLLM_SEG_ROOT:-$(cd "${ROOT_DIR}/.." && pwd)}"
-STAMP_CODE_DIR="${STAMP_CODE_DIR:-${MLLM_SEG_ROOT}/code/STAMP}"
-MODEL_NAME="${MODEL_NAME:-${MLLM_SEG_ROOT}/models/STAMP-2B-uni}"
-OUT_DIR="${OUT_DIR:-${MLLM_SEG_ROOT}/outputs/stamp_uncertainty_mask_head_2gpu}"
+if [[ -n "${USER_MLLM_SEG_ROOT}" ]]; then
+  MLLM_SEG_ROOT="${USER_MLLM_SEG_ROOT}"
+else
+  MLLM_SEG_ROOT="$(cd "${ROOT_DIR}/.." && pwd)"
+fi
+STAMP_CODE_DIR="${USER_STAMP_CODE_DIR:-${MLLM_SEG_ROOT}/code/STAMP}"
+MODEL_NAME="${USER_MODEL_NAME:-${MLLM_SEG_ROOT}/models/STAMP-2B-uni}"
+OUT_DIR="${USER_OUT_DIR:-${MLLM_SEG_ROOT}/outputs/stamp_uncertainty_mask_head_2gpu}"
 
 python "${ROOT_DIR}/offline_rstamp/scripts/patch_stamp_local_training.py" \
   --stamp-code-dir "${STAMP_CODE_DIR}"
