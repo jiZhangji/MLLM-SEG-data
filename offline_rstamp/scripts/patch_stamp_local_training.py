@@ -292,12 +292,20 @@ def patch_seg_trainer_speed(path: Path) -> None:
     if not backup.exists():
         backup.write_text(text, encoding="utf-8")
 
-    text = text.replace(
-        "        torch.cuda.empty_cache()\n",
+    guarded_empty_cache = (
         "        if os.environ.get(\"STAMP_EMPTY_CACHE_EACH_STEP\", \"0\") == \"1\":\n"
-        "            torch.cuda.empty_cache()\n",
-        1,
+        "            torch.cuda.empty_cache()\n"
     )
+    text = re.sub(
+        r'        if os\.environ\.get\("STAMP_EMPTY_CACHE_EACH_STEP", "0"\) == "1":\n'
+        r'(?:\s*if os\.environ\.get\("STAMP_EMPTY_CACHE_EACH_STEP", "0"\) == "1":\n)*'
+        r'\s*torch\.cuda\.empty_cache\(\)\n',
+        guarded_empty_cache,
+        text,
+        count=1,
+    )
+    if guarded_empty_cache not in text:
+        text = text.replace("        torch.cuda.empty_cache()\n", guarded_empty_cache, 1)
 
     old_lm = """        # This call computes the standard cross-entropy loss on the 'text' field
         # It internally uses inputs['input_ids'] and inputs['labels']
@@ -315,6 +323,38 @@ def patch_seg_trainer_speed(path: Path) -> None:
             loss_lm = outputs[0]
 """
     text = text.replace(old_lm, new_lm, 1)
+
+    text = text.replace(
+        "            start_p = 0\n"
+        "            num_gt = 0\n\n"
+        "            for i in range(batch_size):\n",
+        "            start_p = 0\n"
+        "            num_gt = 0\n"
+        "            loss_fn_weighted = WeightedDiceBCELoss(alpha=0.3, beta=0.7)\n\n"
+        "            for i in range(batch_size):\n",
+        1,
+    )
+
+    text = text.replace(
+        "\n                    loss_fn_weighted = WeightedDiceBCELoss(alpha=0.3, beta=0.7)\n"
+        "                    loss_seg_ = loss_fn_weighted(mask_pred.float(), binary_gt_labels.unsqueeze(1).float())\n",
+        "\n                    loss_seg_ = loss_fn_weighted(mask_pred.float(), binary_gt_labels.unsqueeze(1).float())\n",
+        1,
+    )
+
+    img_show_line = "                    img_show = T.ToTensor()(all_images[i][-1]).permute(1, 2, 0).cpu()\n"
+    guarded_img_show = (
+        "                    if IS_MAIN_PROCESS and os.environ.get(\"STAMP_SAVE_SEG_VIS\", \"0\") == \"1\":\n"
+        "                        img_show = T.ToTensor()(all_images[i][-1]).permute(1, 2, 0).cpu()\n"
+    )
+    duplicate_guarded_img_show = (
+        "                    if IS_MAIN_PROCESS and os.environ.get(\"STAMP_SAVE_SEG_VIS\", \"0\") == \"1\":\n"
+        "                        if IS_MAIN_PROCESS and os.environ.get(\"STAMP_SAVE_SEG_VIS\", \"0\") == \"1\":\n"
+        "                        img_show = T.ToTensor()(all_images[i][-1]).permute(1, 2, 0).cpu()\n"
+    )
+    text = text.replace(duplicate_guarded_img_show, guarded_img_show, 1)
+    if guarded_img_show not in text:
+        text = text.replace(img_show_line, guarded_img_show, 1)
 
     text = text.replace(
         "            if IS_MAIN_PROCESS:\n"

@@ -42,6 +42,12 @@ class OnlineCalibratedResidualRefiner(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_size, 2),
         )
+        self._init_residual_as_identity()
+
+    def _init_residual_as_identity(self) -> None:
+        last = self.residual[-1]
+        nn.init.zeros_(last.weight)
+        nn.init.zeros_(last.bias)
 
     @staticmethod
     def ensure_two_class_logits(mask_logits: torch.Tensor) -> torch.Tensor:
@@ -103,6 +109,12 @@ class UncertaintyAwareMaskHead(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_size, 1),
         )
+        self._init_residual_as_identity()
+
+    def _init_residual_as_identity(self) -> None:
+        last = self.residual_head[-1]
+        nn.init.zeros_(last.weight)
+        nn.init.zeros_(last.bias)
 
     @torch.no_grad()
     def initialize_from_classifier(self, classifier: nn.Linear) -> None:
