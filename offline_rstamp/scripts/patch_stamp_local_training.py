@@ -200,6 +200,17 @@ def patch_training_args(text: str) -> str:
     return text
 
 
+def patch_unused_deepspeed(text: str) -> str:
+    """Head-only local training uses Trainer/AdamW, not DeepSpeed CPUAdam.
+
+    Importing DeepSpeed eagerly probes nvcc and fails on otherwise valid
+    PyTorch runtime-only environments. Remove the two unused eager hooks.
+    """
+    text = text.replace("import deepspeed\n", "", 1)
+    text = text.replace("deepspeed.ops.op_builder.CPUAdamBuilder().load()\n", "", 1)
+    return text
+
+
 def patch_lora(text: str) -> str:
     replacements = {
         "r=64,": 'r=int(os.environ.get("STAMP_LORA_R", "16")),',
@@ -273,6 +284,7 @@ def patch_file(path: Path) -> None:
         backup.write_text(text, encoding="utf-8")
 
     text = patch_imports(text)
+    text = patch_unused_deepspeed(text)
     text = patch_cudnn_control(text)
     text = patch_flash_attention(text)
     text = patch_processor_pixels(text)
