@@ -121,6 +121,11 @@ def main() -> int:
         raise ValueError("Token cache is empty.")
     train_items, val_items = split_items(items, args.val_fraction, args.seed)
     token_dim = int(items[0]["mask_hidden"].shape[-1])
+    if token_dim <= 2:
+        raise ValueError(
+            f"Cache token_dim={token_dim}; this is a fallback logit cache, not STAMP mask embeddings. "
+            "Re-export real hidden states before training the independent embedding head."
+        )
 
     train_loader = DataLoader(
         CachedTokenDataset(train_items),

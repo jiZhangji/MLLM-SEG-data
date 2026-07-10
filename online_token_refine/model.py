@@ -79,11 +79,11 @@ class OnlineCalibratedResidualRefiner(nn.Module):
 
 
 class UncertaintyAwareMaskHead(nn.Module):
-    """Enhanced STAMP mask head: mask_hidden -> uncertainty-aware final logits.
+    """Independent online head: contextual mask embeddings -> final mask logits.
 
-    This is the cleaner online variant. It does not take STAMP's previous
-    `bi_logits` as an external input. Instead, it extends the original linear
-    mask classifier with an uncertainty branch and a hidden-state residual head.
+    The original STAMP classifier is neither called nor copied. The legacy
+    `base_binary_logits` output name is retained only so already-patched STAMP
+    trainer code can treat this head's own raw logits as the uncertainty target.
     """
 
     def __init__(
@@ -96,16 +96,24 @@ class UncertaintyAwareMaskHead(nn.Module):
         self.token_dim = int(token_dim)
         self.hidden_size = int(hidden_size)
         self.use_uncertainty_gate = use_uncertainty_gate
-        self.base_classifier = nn.Linear(token_dim, 1)
-        self.uncertainty_head = nn.Sequential(
+        # Compatibility shim for the v2 server patch. It has no parameters and
+        # is never used in forward.
+        self.base_classifier = nn.Identity()
+        self.input_projection = nn.Sequential(
             nn.LayerNorm(token_dim),
             nn.Linear(token_dim, hidden_size),
+            nn.GELU(),
+        )
+        self.raw_mask_head = nn.Linear(hidden_size, 1)
+        self.uncertainty_head = nn.Sequential(
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, hidden_size),
             nn.GELU(),
             nn.Linear(hidden_size, 1),
         )
         self.residual_head = nn.Sequential(
-            nn.LayerNorm(token_dim + 2),
-            nn.Linear(token_dim + 2, hidden_size),
+            nn.LayerNorm(hidden_size + 2),
+            nn.Linear(hidden_size + 2, hidden_size),
             nn.GELU(),
             nn.Linear(hidden_size, hidden_size),
             nn.GELU(),
@@ -128,26 +136,27 @@ class UncertaintyAwareMaskHead(nn.Module):
 
     @torch.no_grad()
     def initialize_from_classifier(self, classifier: nn.Linear) -> None:
-        self.base_classifier.weight.copy_(classifier.weight)
-        if classifier.bias is not None and self.base_classifier.bias is not None:
-            self.base_classifier.bias.copy_(classifier.bias)
+        # Kept for compatibility with an already-patched STAMP checkout. This
+        # independent head intentionally does not import old classifier weights.
+        del classifier
 
     def forward(self, mask_hidden: torch.Tensor) -> dict[str, torch.Tensor]:
         mask_hidden = mask_hidden.float()
-        base_binary_logits = self.base_classifier(mask_hidden)
-        fg_prob = torch.sigmoid(base_binary_logits)
+        features = self.input_projection(mask_hidden)
+        raw_binary_logits = self.raw_mask_head(features)
+        fg_prob = torch.sigmoid(raw_binary_logits)
         logit_uncertainty = 1.0 - torch.abs(2.0 * fg_prob - 1.0)
-        learned_uncertainty = torch.sigmoid(self.uncertainty_head(mask_hidden))
+        learned_uncertainty = torch.sigmoid(self.uncertainty_head(features))
         # Probabilistic OR: refine a token when either its classifier margin is
         # ambiguous or its hidden state predicts that the base decision is wrong.
         uncertainty = 1.0 - (1.0 - logit_uncertainty) * (1.0 - learned_uncertainty)
-        features = torch.cat([mask_hidden, fg_prob, uncertainty], dim=-1)
-        delta_binary_logits = self.residual_head(features)
+        residual_features = torch.cat([features, fg_prob, uncertainty], dim=-1)
+        delta_binary_logits = self.residual_head(residual_features)
         gate = uncertainty if self.use_uncertainty_gate else torch.ones_like(uncertainty)
-        refined_binary_logits = base_binary_logits + gate * delta_binary_logits
+        refined_binary_logits = raw_binary_logits + gate * delta_binary_logits
         refined_logits = torch.cat([-refined_binary_logits, refined_binary_logits], dim=-1)
         return {
-            "base_binary_logits": base_binary_logits,
+            "base_binary_logits": raw_binary_logits,
             "refined_binary_logits": refined_binary_logits,
             "refined_logits": refined_logits,
             "delta_binary_logits": delta_binary_logits,
