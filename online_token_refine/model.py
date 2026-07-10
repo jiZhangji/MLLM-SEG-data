@@ -93,6 +93,8 @@ class UncertaintyAwareMaskHead(nn.Module):
         use_uncertainty_gate: bool = False,
     ) -> None:
         super().__init__()
+        self.token_dim = int(token_dim)
+        self.hidden_size = int(hidden_size)
         self.use_uncertainty_gate = use_uncertainty_gate
         self.base_classifier = nn.Linear(token_dim, 1)
         self.uncertainty_head = nn.Sequential(
@@ -109,7 +111,15 @@ class UncertaintyAwareMaskHead(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_size, 1),
         )
+        self._init_uncertainty_prior()
         self._init_residual_as_identity()
+
+    def _init_uncertainty_prior(self) -> None:
+        # Start from a conservative error prior. The auxiliary uncertainty
+        # target quickly adapts this branch without perturbing STAMP logits.
+        last = self.uncertainty_head[-1]
+        nn.init.zeros_(last.weight)
+        nn.init.constant_(last.bias, -2.0)
 
     def _init_residual_as_identity(self) -> None:
         last = self.residual_head[-1]
@@ -128,7 +138,9 @@ class UncertaintyAwareMaskHead(nn.Module):
         fg_prob = torch.sigmoid(base_binary_logits)
         logit_uncertainty = 1.0 - torch.abs(2.0 * fg_prob - 1.0)
         learned_uncertainty = torch.sigmoid(self.uncertainty_head(mask_hidden))
-        uncertainty = 0.5 * (logit_uncertainty + learned_uncertainty)
+        # Probabilistic OR: refine a token when either its classifier margin is
+        # ambiguous or its hidden state predicts that the base decision is wrong.
+        uncertainty = 1.0 - (1.0 - logit_uncertainty) * (1.0 - learned_uncertainty)
         features = torch.cat([mask_hidden, fg_prob, uncertainty], dim=-1)
         delta_binary_logits = self.residual_head(features)
         gate = uncertainty if self.use_uncertainty_gate else torch.ones_like(uncertainty)
