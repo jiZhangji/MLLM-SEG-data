@@ -109,8 +109,11 @@ def build_token_cache(
     return cache
 
 
-def load_token_cache(cache_path: Path) -> dict[str, object]:
-    cache = torch.load(cache_path, map_location="cpu", weights_only=False)
+def load_token_cache(cache_path: Path, mmap: bool = False) -> dict[str, object]:
+    try:
+        cache = torch.load(cache_path, map_location="cpu", weights_only=False, mmap=mmap)
+    except (TypeError, RuntimeError):
+        cache = torch.load(cache_path, map_location="cpu", weights_only=False)
     if not isinstance(cache, dict) or "items" not in cache:
         raise ValueError(f"Invalid token cache: {cache_path}")
     return cache
