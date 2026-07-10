@@ -97,10 +97,14 @@ def main() -> int:
     parser.add_argument("--uncertainty-bce-weight", type=float, default=0.3)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--mmap-cache", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--disable-cudnn", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--progress", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
+    if args.disable_cudnn:
+        torch.backends.cudnn.enabled = False
+        print("[INFO] cuDNN disabled; CUDA remains enabled.", flush=True)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
         torch.set_float32_matmul_precision("high")
