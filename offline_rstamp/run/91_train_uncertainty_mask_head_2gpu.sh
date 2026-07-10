@@ -80,7 +80,32 @@ export STAMP_GRADIENT_CHECKPOINTING="${STAMP_GRADIENT_CHECKPOINTING:-0}"
 export STAMP_ATTN_IMPL="${STAMP_ATTN_IMPL:-sdpa}"
 export STAMP_MIN_PIXELS="${STAMP_MIN_PIXELS:-802816}"
 export STAMP_MAX_PIXELS="${STAMP_MAX_PIXELS:-1003520}"
-export STAMP_DISABLE_CUDNN="${STAMP_DISABLE_CUDNN:-0}"
+REQUESTED_DISABLE_CUDNN="${STAMP_DISABLE_CUDNN:-auto}"
+if [[ "${REQUESTED_DISABLE_CUDNN}" == "1" ]]; then
+  STAMP_DISABLE_CUDNN=1
+elif python - <<'PY' >/dev/null 2>&1
+import torch
+
+if not torch.cuda.is_available():
+    raise SystemExit(1)
+torch.backends.cudnn.enabled = True
+layer = torch.nn.Conv3d(
+    3,
+    8,
+    kernel_size=(2, 14, 14),
+    stride=(2, 14, 14),
+    bias=False,
+).cuda().to(torch.bfloat16)
+inputs = torch.randn(1, 3, 2, 28, 28, device="cuda", dtype=torch.bfloat16)
+layer(inputs)
+torch.cuda.synchronize()
+PY
+then
+  STAMP_DISABLE_CUDNN=0
+else
+  STAMP_DISABLE_CUDNN=1
+fi
+export STAMP_DISABLE_CUDNN
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export WANDB_DISABLED="${WANDB_DISABLED:-true}"
 
@@ -96,6 +121,7 @@ echo "  STAMP_MAX_SAMPLES=${STAMP_MAX_SAMPLES}"
 echo "  STAMP_NUM_WORKERS=${STAMP_NUM_WORKERS}"
 echo "  STAMP_REFINE_TRAIN_BASE=${STAMP_REFINE_TRAIN_BASE}"
 echo "  STAMP_UNCERTAINTY_LOSS_WEIGHT=${STAMP_UNCERTAINTY_LOSS_WEIGHT}"
+echo "  STAMP_DISABLE_CUDNN=${STAMP_DISABLE_CUDNN} (requested=${REQUESTED_DISABLE_CUDNN})"
 
 if [[ "${NPROC_PER_NODE}" -eq 1 ]]; then
   # A one-GPU run does not need a process group. Avoid initializing NCCL on
