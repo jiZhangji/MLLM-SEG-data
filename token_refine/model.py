@@ -95,15 +95,28 @@ class SpatialTokenBlock(nn.Module):
 
     def __init__(self, hidden_size: int) -> None:
         super().__init__()
+        self.norm = nn.LayerNorm(hidden_size)
         self.block = nn.Sequential(
-            nn.GroupNorm(1, hidden_size),
-            nn.Conv2d(hidden_size, hidden_size, 3, padding=1, groups=hidden_size),
+            nn.Linear(hidden_size, hidden_size * 2),
             nn.GELU(),
-            nn.Conv2d(hidden_size, hidden_size, 1),
+            nn.Linear(hidden_size * 2, hidden_size),
         )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        return features + self.block(features)
+        # features: [B, H, W, C]. Aggregate valid 4-neighborhoods without
+        # Conv2d/cuDNN so this remains fast on CUDA stacks with broken cuDNN.
+        context = features.clone()
+        counts = torch.ones((*features.shape[1:3], 1), device=features.device, dtype=features.dtype)
+        context[:, 1:] = context[:, 1:] + features[:, :-1]
+        counts[1:] = counts[1:] + 1
+        context[:, :-1] = context[:, :-1] + features[:, 1:]
+        counts[:-1] = counts[:-1] + 1
+        context[:, :, 1:] = context[:, :, 1:] + features[:, :, :-1]
+        counts[:, 1:] = counts[:, 1:] + 1
+        context[:, :, :-1] = context[:, :, :-1] + features[:, :, 1:]
+        counts[:, :-1] = counts[:, :-1] + 1
+        context = context / counts.unsqueeze(0)
+        return features + self.block(self.norm(context))
 
 
 class IndependentUncertaintyMaskHead(nn.Module):
@@ -125,15 +138,15 @@ class IndependentUncertaintyMaskHead(nn.Module):
             nn.GELU(),
         )
         self.context_blocks = nn.ModuleList([SpatialTokenBlock(hidden_size) for _ in range(depth)])
-        self.uncertainty_head = nn.Conv2d(hidden_size, 1, 1)
+        self.uncertainty_head = nn.Linear(hidden_size, 1)
         self.correction = nn.Sequential(
-            nn.Conv2d(hidden_size + 1, hidden_size, 3, padding=1),
+            nn.Linear(hidden_size + 1, hidden_size),
             nn.GELU(),
-            nn.Conv2d(hidden_size, hidden_size, 3, padding=1),
+            nn.Linear(hidden_size, hidden_size),
         )
         self.mask_classifier = nn.Sequential(
-            nn.GroupNorm(1, hidden_size),
-            nn.Conv2d(hidden_size, 2, 1),
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, 2),
         )
         nn.init.zeros_(self.correction[-1].weight)
         nn.init.zeros_(self.correction[-1].bias)
@@ -144,18 +157,17 @@ class IndependentUncertaintyMaskHead(nn.Module):
         if num_tokens != grid_h * grid_w:
             raise ValueError(f"Token count {num_tokens} does not match grid {grid_h}x{grid_w}.")
         features = self.input_projection(mask_hidden)
-        features = features.transpose(1, 2).reshape(batch_size, self.hidden_size, grid_h, grid_w)
+        features = features.reshape(batch_size, grid_h, grid_w, self.hidden_size)
         for block in self.context_blocks:
             features = block(features)
-        uncertainty_logits_2d = self.uncertainty_head(features)
-        uncertainty_2d = torch.sigmoid(uncertainty_logits_2d)
-        correction = self.correction(torch.cat([features, uncertainty_2d], dim=1))
-        refined_features = features + uncertainty_2d * correction
-        mask_logits_2d = self.mask_classifier(refined_features)
-        mask_logits = mask_logits_2d.flatten(2).transpose(1, 2)
-        uncertainty_logits = uncertainty_logits_2d.flatten(2).transpose(1, 2)
+        uncertainty_logits = self.uncertainty_head(features)
+        uncertainty = torch.sigmoid(uncertainty_logits)
+        correction = self.correction(torch.cat([features, uncertainty], dim=-1))
+        refined_features = features + uncertainty * correction
+        mask_logits = self.mask_classifier(refined_features).reshape(batch_size, num_tokens, 2)
+        uncertainty_logits = uncertainty_logits.reshape(batch_size, num_tokens, 1)
         return {
             "mask_logits": mask_logits,
-            "uncertainty": torch.sigmoid(uncertainty_logits),
+            "uncertainty": uncertainty.reshape(batch_size, num_tokens, 1),
             "uncertainty_logits": uncertainty_logits,
         }
