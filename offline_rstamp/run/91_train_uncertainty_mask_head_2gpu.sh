@@ -50,6 +50,37 @@ else
   NPROC_PER_NODE="${#CUDA_DEVICE_ARRAY[@]}"
 fi
 export NPROC_PER_NODE
+
+TORCH_NCCL_SO=""
+if [[ "${NPROC_PER_NODE}" -gt 1 && "${STAMP_PIN_PYTORCH_NCCL:-1}" == "1" ]]; then
+  TORCH_NCCL_SO="$(python - <<'PY'
+from pathlib import Path
+import site
+
+candidates = []
+for root in site.getsitepackages():
+    root = Path(root)
+    candidates.extend([
+        root / "nvidia" / "nccl" / "lib" / "libnccl.so.2",
+        root / "torch" / "lib" / "libnccl.so.2",
+    ])
+for path in candidates:
+    if path.exists():
+        print(path.resolve())
+        break
+PY
+)"
+  if [[ -n "${TORCH_NCCL_SO}" ]]; then
+    export LD_PRELOAD="${TORCH_NCCL_SO}${LD_PRELOAD:+:${LD_PRELOAD}}"
+    export LD_LIBRARY_PATH="$(dirname "${TORCH_NCCL_SO}")${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    export NCCL_NET_PLUGIN="${NCCL_NET_PLUGIN:-none}"
+    export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
+    export NCCL_CUMEM_HOST_ENABLE="${NCCL_CUMEM_HOST_ENABLE:-0}"
+    export NCCL_NVLS_ENABLE="${NCCL_NVLS_ENABLE:-0}"
+    export NCCL_MNNVL_ENABLE="${NCCL_MNNVL_ENABLE:-0}"
+  fi
+fi
+
 export MODEL_NAME
 export OUT_DIR
 export STAMP_UNCERTAINTY_MASK_HEAD="${STAMP_UNCERTAINTY_MASK_HEAD:-1}"
@@ -115,6 +146,7 @@ echo "  MODEL_NAME=${MODEL_NAME}"
 echo "  OUT_DIR=${OUT_DIR}"
 echo "  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "  NPROC_PER_NODE=${NPROC_PER_NODE}"
+echo "  TORCH_NCCL_SO=${TORCH_NCCL_SO:-not-found}"
 echo "  STAMP_BATCH_SIZE=${STAMP_BATCH_SIZE}"
 echo "  STAMP_GRAD_ACCUM=${STAMP_GRAD_ACCUM}"
 echo "  STAMP_MAX_SAMPLES=${STAMP_MAX_SAMPLES}"
@@ -129,5 +161,16 @@ if [[ "${NPROC_PER_NODE}" -eq 1 ]]; then
   unset RANK WORLD_SIZE LOCAL_RANK LOCAL_WORLD_SIZE MASTER_ADDR MASTER_PORT
   python -m train.main_uni
 else
-  torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" -m train.main_uni
+  if [[ "${STAMP_NCCL_PREFLIGHT:-1}" == "1" ]]; then
+    echo "Running NCCL preflight with pinned PyTorch NCCL..."
+    python -m torch.distributed.run \
+      --standalone \
+      --nproc_per_node="${NPROC_PER_NODE}" \
+      --no-python \
+      python -c 'import os, torch; import torch.distributed as dist; rank=int(os.environ["LOCAL_RANK"]); torch.cuda.set_device(rank); dist.init_process_group("nccl"); value=torch.tensor([rank + 1.0], device="cuda"); dist.all_reduce(value); print(f"NCCL preflight rank={rank} sum={value.item()}", flush=True); dist.destroy_process_group()'
+  fi
+  python -m torch.distributed.run \
+    --standalone \
+    --nproc_per_node="${NPROC_PER_NODE}" \
+    -m train.main_uni
 fi
