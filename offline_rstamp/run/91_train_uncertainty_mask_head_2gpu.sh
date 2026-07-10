@@ -97,4 +97,11 @@ echo "  STAMP_NUM_WORKERS=${STAMP_NUM_WORKERS}"
 echo "  STAMP_REFINE_TRAIN_BASE=${STAMP_REFINE_TRAIN_BASE}"
 echo "  STAMP_UNCERTAINTY_LOSS_WEIGHT=${STAMP_UNCERTAINTY_LOSS_WEIGHT}"
 
-torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" -m train.main_uni
+if [[ "${NPROC_PER_NODE}" -eq 1 ]]; then
+  # A one-GPU run does not need a process group. Avoid initializing NCCL on
+  # hosts whose CUDA driver and bundled NCCL runtime are incompatible.
+  unset RANK WORLD_SIZE LOCAL_RANK LOCAL_WORLD_SIZE MASTER_ADDR MASTER_PORT
+  python -m train.main_uni
+else
+  torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" -m train.main_uni
+fi
