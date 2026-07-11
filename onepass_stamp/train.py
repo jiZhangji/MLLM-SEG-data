@@ -3,15 +3,18 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.data import DataLoader, Sampler
+from torch.utils.data import DataLoader, DistributedSampler, Sampler
 from tqdm import tqdm
 
 from .checkpoint import load_checkpoint, save_checkpoint
@@ -133,21 +136,34 @@ def main() -> int:
         raise ValueError("lora-rank must be positive when LoRA is enabled.")
     if args.limit < 0 or args.offset < 0:
         raise ValueError("limit and offset must be non-negative.")
+    distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if distributed:
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend="nccl")
+    rank = dist.get_rank() if distributed else 0
+    is_main = rank == 0
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    seed_everything(args.seed)
+    seed_everything(args.seed + rank)
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
 
-    device = torch.device(args.device)
+    device = torch.device(f"cuda:{local_rank}" if distributed else args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false.")
     cudnn_disabled = configure_cudnn(args.disable_cudnn, device)
-    print(f"cuDNN disabled: {int(cudnn_disabled)}", flush=True)
+    if is_main:
+        print(f"DDP world size: {dist.get_world_size() if distributed else 1}", flush=True)
+        print(f"cuDNN disabled: {int(cudnn_disabled)}", flush=True)
 
     dataset = OnePassDataset(args.train_json, args.data_root, limit=args.limit, offset=args.offset)
     if not dataset:
         raise ValueError("Training dataset is empty.")
-    sampler = EpochRandomSampler(len(dataset), args.seed)
+    sampler = (
+        DistributedSampler(dataset, shuffle=True, seed=args.seed, drop_last=False)
+        if distributed
+        else EpochRandomSampler(len(dataset), args.seed)
+    )
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -172,14 +188,15 @@ def main() -> int:
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
     )
-    query_parameters = list(model.query_module.parameters())
-    head_parameters = list(model.mask_classifier.parameters())
+    raw_model = model
+    query_parameters = list(raw_model.query_module.parameters())
+    head_parameters = list(raw_model.mask_classifier.parameters())
     parameter_groups = [
         {"params": query_parameters, "lr": args.query_learning_rate, "name": "queries"},
         {"params": head_parameters, "lr": args.head_learning_rate, "name": "mask_head"},
     ]
     if args.use_lora:
-        lora_parameters = model.lora_parameters()
+        lora_parameters = raw_model.lora_parameters()
         if not lora_parameters:
             raise RuntimeError("LoRA was requested but no LoRA parameters were injected.")
         parameter_groups.append({"params": lora_parameters, "lr": args.lora_learning_rate, "name": "lora"})
@@ -192,13 +209,15 @@ def main() -> int:
     start_batch = 0
     global_step = 0
     if args.resume is not None:
-        checkpoint = load_checkpoint(model, args.resume, optimizer=optimizer, scheduler=scheduler)
+        checkpoint = load_checkpoint(raw_model, args.resume, optimizer=optimizer, scheduler=scheduler)
         start_epoch = int(checkpoint.get("epoch", 0))
         start_batch = int(checkpoint.get("batch_in_epoch", 0))
         global_step = int(checkpoint.get("global_step", 0))
 
-    trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
-    total = sum(parameter.numel() for parameter in model.parameters())
+    if distributed:
+        model = DistributedDataParallel(raw_model, device_ids=[local_rank], output_device=local_rank)
+    trainable = sum(parameter.numel() for parameter in raw_model.parameters() if parameter.requires_grad)
+    total = sum(parameter.numel() for parameter in raw_model.parameters())
     settings = {
         **checkpoint_config(args),
         "train_json": str(args.train_json),
@@ -213,10 +232,11 @@ def main() -> int:
         "total_parameters": total,
         "total_optimizer_steps": total_steps,
     }
-    (args.output_dir / "train_config.json").write_text(
-        json.dumps(settings, indent=2, ensure_ascii=True), encoding="utf-8"
-    )
-    print(json.dumps(settings, indent=2, ensure_ascii=True), flush=True)
+    if is_main:
+        (args.output_dir / "train_config.json").write_text(
+            json.dumps(settings, indent=2, ensure_ascii=True), encoding="utf-8"
+        )
+        print(json.dumps(settings, indent=2, ensure_ascii=True), flush=True)
 
     model.train()
     optimizer.zero_grad(set_to_none=True)
@@ -227,7 +247,12 @@ def main() -> int:
 
     for epoch in range(start_epoch, args.epochs):
         sampler.set_epoch(epoch)
-        iterator = tqdm(loader, desc=f"onepass train epoch {epoch + 1}/{args.epochs}", dynamic_ncols=True)
+        iterator = tqdm(
+            loader,
+            desc=f"onepass train epoch {epoch + 1}/{args.epochs}",
+            dynamic_ncols=True,
+            disable=not is_main,
+        )
         for batch_index, samples in enumerate(iterator):
             if epoch == start_epoch and batch_index < start_batch:
                 continue
@@ -255,13 +280,13 @@ def main() -> int:
                 (batch_index + 1) % args.gradient_accumulation == 0 or batch_index + 1 == len(loader)
             )
             if should_update:
-                torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), args.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(raw_model.trainable_parameters(), args.max_grad_norm)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
                 global_step += 1
 
-                if global_step % args.logging_steps == 0:
+                if is_main and global_step % args.logging_steps == 0:
                     count = max(int(running["count"]), 1)
                     row = {
                         "epoch": epoch + 1,
@@ -279,9 +304,9 @@ def main() -> int:
                     iterator.set_postfix(loss=f"{row['loss']:.4f}", step=global_step)
                     running = {"loss": 0.0, "loss_bce": 0.0, "loss_dice": 0.0, "count": 0}
 
-                if args.save_steps > 0 and global_step % args.save_steps == 0:
+                if is_main and args.save_steps > 0 and global_step % args.save_steps == 0:
                     save_checkpoint(
-                        model,
+                        raw_model,
                         args.output_dir / f"onepass_step_{global_step}.pt",
                         config=checkpoint_config(args),
                         epoch=epoch,
@@ -292,26 +317,31 @@ def main() -> int:
                     )
 
         start_batch = 0
-        save_checkpoint(
-            model,
-            args.output_dir / f"onepass_epoch_{epoch + 1}.pt",
+        if is_main:
+            save_checkpoint(
+                raw_model,
+                args.output_dir / f"onepass_epoch_{epoch + 1}.pt",
+                config=checkpoint_config(args),
+                epoch=epoch + 1,
+                batch_in_epoch=0,
+                global_step=global_step,
+                optimizer=optimizer,
+                scheduler=scheduler,
+            )
+
+    if is_main:
+        final_path = save_checkpoint(
+            raw_model,
+            args.output_dir / "onepass_stamp.pt",
             config=checkpoint_config(args),
-            epoch=epoch + 1,
+            epoch=args.epochs,
             batch_in_epoch=0,
             global_step=global_step,
-            optimizer=optimizer,
-            scheduler=scheduler,
         )
-
-    final_path = save_checkpoint(
-        model,
-        args.output_dir / "onepass_stamp.pt",
-        config=checkpoint_config(args),
-        epoch=args.epochs,
-        batch_in_epoch=0,
-        global_step=global_step,
-    )
-    print(f"OnePass-STAMP checkpoint written to: {final_path}", flush=True)
+        print(f"OnePass-STAMP checkpoint written to: {final_path}", flush=True)
+    if distributed:
+        dist.barrier()
+        dist.destroy_process_group()
     return 0
 
 
