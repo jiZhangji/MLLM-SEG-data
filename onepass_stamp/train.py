@@ -17,7 +17,7 @@ from tqdm import tqdm
 from .checkpoint import load_checkpoint, save_checkpoint
 from .data import OnePassDataset, collate_samples, grid_targets, prepare_onepass_batch
 from .model import onepass_mask_loss
-from .runtime import load_onepass_model
+from .runtime import configure_cudnn, load_onepass_model
 
 
 def seed_everything(seed: int) -> None:
@@ -117,7 +117,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-pixels", type=int, default=802816)
     parser.add_argument("--max-pixels", type=int, default=1003520)
     parser.add_argument("--use-task-token", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--disable-cudnn", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--disable-cudnn", action=argparse.BooleanOptionalAction, default=None)
     return parser.parse_args()
 
 
@@ -135,14 +135,14 @@ def main() -> int:
         raise ValueError("limit and offset must be non-negative.")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     seed_everything(args.seed)
-    if args.disable_cudnn:
-        torch.backends.cudnn.enabled = False
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
 
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false.")
+    cudnn_disabled = configure_cudnn(args.disable_cudnn, device)
+    print(f"cuDNN disabled: {int(cudnn_disabled)}", flush=True)
 
     dataset = OnePassDataset(args.train_json, args.data_root, limit=args.limit, offset=args.offset)
     if not dataset:

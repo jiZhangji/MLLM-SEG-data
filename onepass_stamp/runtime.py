@@ -39,6 +39,36 @@ def resolve_dtype(name: str, device: torch.device) -> torch.dtype:
     return values[normalized]
 
 
+def configure_cudnn(requested_disable: bool | None, device: torch.device) -> bool:
+    """Enable cuDNN when its BF16 vision-patch Conv3D probe succeeds."""
+    if device.type != "cuda":
+        return False
+    if requested_disable is True:
+        torch.backends.cudnn.enabled = False
+        return True
+    if requested_disable is False:
+        torch.backends.cudnn.enabled = True
+        return False
+
+    try:
+        torch.backends.cudnn.enabled = True
+        layer = torch.nn.Conv3d(
+            3,
+            8,
+            kernel_size=(2, 14, 14),
+            stride=(2, 14, 14),
+            bias=False,
+        ).to(device=device, dtype=torch.bfloat16)
+        inputs = torch.randn(1, 3, 2, 28, 28, device=device, dtype=torch.bfloat16)
+        layer(inputs)
+        torch.cuda.synchronize(device)
+        return False
+    except RuntimeError as error:
+        torch.backends.cudnn.enabled = False
+        print(f"[WARN] cuDNN Conv3D probe failed; using native CUDA kernels: {error}", flush=True)
+        return True
+
+
 def _initialize_added_task_token(backbone: Any, tokenizer: Any, task_token_id: int) -> None:
     source_ids = tokenizer.encode("segmentation task", add_special_tokens=False)
     source_ids = [token_id for token_id in source_ids if 0 <= token_id < task_token_id]

@@ -15,6 +15,7 @@ from onepass_stamp.checkpoint import load_checkpoint, save_checkpoint
 from onepass_stamp.data import OnePassDataset, OnePassSample, prepare_onepass_batch
 from onepass_stamp.lora import OnePassLoRALinear, inject_lora, lora_parameters
 from onepass_stamp.model import OnePassQueryModule, OnePassSTAMP, onepass_mask_loss
+from onepass_stamp.runtime import configure_cudnn
 
 
 class FakeTokenizer:
@@ -90,6 +91,9 @@ class FakeBackbone(nn.Module):
 
 
 class OnePassTests(unittest.TestCase):
+    def test_cudnn_probe_is_noop_on_cpu(self):
+        self.assertFalse(configure_cudnn(None, torch.device("cpu")))
+
     def test_lora_injection_preserves_initial_output(self):
         class Block(nn.Module):
             def __init__(self):

@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from .checkpoint import load_checkpoint, read_checkpoint_config
 from .data import OnePassDataset, collate_samples, prepare_onepass_batch
-from .runtime import load_onepass_model
+from .runtime import configure_cudnn, load_onepass_model
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-pixels", type=int)
     parser.add_argument("--max-pixels", type=int)
     parser.add_argument("--use-task-token", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--disable-cudnn", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--disable-cudnn", action=argparse.BooleanOptionalAction, default=None)
     return parser.parse_args()
 
 
@@ -46,11 +46,11 @@ def synchronize(device: torch.device) -> None:
 def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    if args.disable_cudnn:
-        torch.backends.cudnn.enabled = False
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false.")
+    cudnn_disabled = configure_cudnn(args.disable_cudnn, device)
+    print(f"cuDNN disabled: {int(cudnn_disabled)}", flush=True)
 
     saved_config = read_checkpoint_config(args.checkpoint)
     use_task_token = (
