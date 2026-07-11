@@ -88,6 +88,11 @@ def _path_values(item: dict[str, Any], keys: Sequence[str]) -> list[str]:
 
 def resolve_path(raw: str, roots: Sequence[Path]) -> Path:
     candidate = Path(raw)
+    # Full STAMP JSON files already contain absolute paths. Avoid 160k+ remote
+    # filesystem stat calls while indexing image/mask records; PIL will still
+    # raise a precise FileNotFoundError when a sampled file is opened.
+    if candidate.is_absolute():
+        return candidate
     if candidate.exists():
         return candidate.resolve()
     for root in roots:
