@@ -10,6 +10,7 @@ from onepass_qwen7b.model import hidden_size
 from onepass_qwen7b.runtime import (
     add_stamp_code_to_path,
     configure_cudnn,
+    enable_gradient_checkpointing,
     reset_classifier,
     resolve_dtype,
     semantic_average,
@@ -105,8 +106,7 @@ def load_fair_stamp_model(
             use_rslora=use_rslora,
         )
     if gradient_checkpointing:
-        backbone.gradient_checkpointing_enable()
-        backbone.config.use_cache = False
+        enable_gradient_checkpointing(backbone)
     model = FairSTAMP7B(backbone, input_adapter, output_adapter, mask_token_id=mask_id)
     model.to(device)
     return model, processor

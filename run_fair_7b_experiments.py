@@ -23,6 +23,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=1, help="Per-GPU micro batch size.")
     parser.add_argument("--target-global-batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument(
+        "--gradient-checkpointing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Disabled by default for high-memory H200 runs.",
+    )
     parser.add_argument("--learning-rate", type=float, default=3e-5)
     parser.add_argument("--lora-rank", type=int, default=64)
     parser.add_argument("--lora-alpha", type=float, default=128.0)
@@ -106,6 +112,9 @@ def main() -> int:
     ]
     if args.data_root is not None:
         common += ["--data-root", str(args.data_root)]
+    common.append(
+        "--gradient-checkpointing" if args.gradient_checkpointing else "--no-gradient-checkpointing"
+    )
     manifest = {
         "base_model": str(args.base_model),
         "train_json": [str(path) for path in args.train_json],
@@ -115,6 +124,7 @@ def main() -> int:
         "gradient_accumulation": grad_accum,
         "effective_global_batch_size": args.target_global_batch_size,
         "learning_rate": args.learning_rate,
+        "gradient_checkpointing": args.gradient_checkpointing,
         "lora_rank": args.lora_rank,
         "lora_alpha": args.lora_alpha,
         "use_rslora": True,

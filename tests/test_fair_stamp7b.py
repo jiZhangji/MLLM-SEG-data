@@ -6,6 +6,7 @@ import torch.nn as nn
 from fair_stamp7b.data import _last_subsequence
 from fair_stamp7b.model import SpecialTokenInputAdapter, SpecialTokenOutputAdapter
 from onepass_stamp.lora import OnePassLoRALinear
+from onepass_qwen7b.runtime import enable_gradient_checkpointing
 
 
 def test_last_subsequence_uses_final_assistant_header() -> None:
@@ -46,3 +47,18 @@ def test_special_output_adapter_updates_only_selected_columns() -> None:
 def test_rslora_uses_sqrt_rank_scaling() -> None:
     layer = OnePassLoRALinear(nn.Linear(4, 4), rank=4, alpha=8.0, dropout=0.0, use_rslora=True)
     assert layer.scaling == 4.0
+
+
+def test_gradient_checkpointing_is_non_reentrant() -> None:
+    class FakeModel:
+        def __init__(self) -> None:
+            self.config = type("Config", (), {"use_cache": True})()
+            self.kwargs = None
+
+        def gradient_checkpointing_enable(self, *, gradient_checkpointing_kwargs):
+            self.kwargs = gradient_checkpointing_kwargs
+
+    model = FakeModel()
+    enable_gradient_checkpointing(model)
+    assert model.kwargs == {"use_reentrant": False}
+    assert model.config.use_cache is False

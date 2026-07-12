@@ -70,6 +70,20 @@ def reset_classifier(classifier: torch.nn.Module, initializer_range: float) -> N
             torch.nn.init.zeros_(classifier.bias)
 
 
+def enable_gradient_checkpointing(model: torch.nn.Module) -> None:
+    """Enable DDP-safe checkpointing for trainable adapters on a frozen base."""
+    try:
+        model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False}
+        )
+    except TypeError as error:
+        raise RuntimeError(
+            "This Transformers version cannot request non-reentrant gradient checkpointing. "
+            "Upgrade Transformers or train with --no-gradient-checkpointing."
+        ) from error
+    model.config.use_cache = False
+
+
 def load_base_onepass_model(
     *,
     stamp_code_dir: str | Path,
@@ -150,8 +164,7 @@ def load_base_onepass_model(
             use_rslora=use_rslora,
         )
     if gradient_checkpointing:
-        backbone.gradient_checkpointing_enable()
-        backbone.config.use_cache = False
+        enable_gradient_checkpointing(backbone)
 
     model = OnePassQwen7B(
         backbone=backbone,
