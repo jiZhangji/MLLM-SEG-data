@@ -13,14 +13,22 @@ DEFAULT_TARGETS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj
 class OnePassLoRALinear(nn.Module):
     """Minimal in-place LoRA wrapper that preserves the original Linear API."""
 
-    def __init__(self, base_layer: nn.Linear, rank: int, alpha: float, dropout: float) -> None:
+    def __init__(
+        self,
+        base_layer: nn.Linear,
+        rank: int,
+        alpha: float,
+        dropout: float,
+        use_rslora: bool = False,
+    ) -> None:
         super().__init__()
         if rank <= 0:
             raise ValueError("LoRA rank must be positive.")
         self.base_layer = base_layer
         self.rank = int(rank)
         self.alpha = float(alpha)
-        self.scaling = self.alpha / self.rank
+        self.use_rslora = bool(use_rslora)
+        self.scaling = self.alpha / (math.sqrt(self.rank) if self.use_rslora else self.rank)
         self.dropout = nn.Dropout(float(dropout)) if dropout > 0 else nn.Identity()
         self.lora_a = nn.Linear(base_layer.in_features, rank, bias=False)
         self.lora_b = nn.Linear(rank, base_layer.out_features, bias=False)
@@ -63,6 +71,7 @@ def inject_lora(
     alpha: float,
     dropout: float,
     target_names: Iterable[str] = DEFAULT_TARGETS,
+    use_rslora: bool = False,
 ) -> int:
     targets = set(target_names)
     replacements: list[tuple[nn.Module, str, nn.Linear]] = []
@@ -73,7 +82,7 @@ def inject_lora(
     if not replacements:
         raise ValueError(f"No Linear modules matched LoRA targets {sorted(targets)}.")
     for parent, child_name, child in replacements:
-        setattr(parent, child_name, OnePassLoRALinear(child, rank, alpha, dropout))
+        setattr(parent, child_name, OnePassLoRALinear(child, rank, alpha, dropout, use_rslora))
     return len(replacements)
 
 

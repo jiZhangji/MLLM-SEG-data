@@ -88,6 +88,7 @@ def main() -> int:
         lora_rank=int(config.get("lora_rank", 16)),
         lora_alpha=float(config.get("lora_alpha", 32.0)),
         lora_dropout=float(config.get("lora_dropout", 0.05)),
+        use_rslora=bool(config.get("use_rslora", False)),
         train_visual_projection=bool(config.get("train_visual_projection", True)),
         train_position_embeddings=bool(config.get("train_position_embeddings", True)),
         train_classifier=bool(config.get("train_classifier", True)),
@@ -179,4 +180,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

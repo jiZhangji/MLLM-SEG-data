@@ -19,13 +19,13 @@ from torch.utils.data import DataLoader, DistributedSampler, Sampler
 from tqdm import tqdm
 
 from .checkpoint import load_checkpoint, save_checkpoint
-from .data import OnePass7BDataset, collate_samples, grid_targets, prepare_batch
+from .data import FairStamp7BDataset, collate_samples, grid_targets, prepare_batch
 from .model import segmentation_loss
-from .runtime import configure_cudnn, load_base_onepass_model
+from .runtime import configure_cudnn, load_fair_stamp_model
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train OnePass segmentation from a base Qwen2-VL-7B checkpoint.")
+    parser = argparse.ArgumentParser(description="Train native two-stage STAMP from a plain Qwen2-VL-7B base.")
     parser.add_argument("--stamp-code-dir", required=True, type=Path)
     parser.add_argument("--base-model", required=True)
     parser.add_argument("--train-json", required=True, type=Path, nargs="+")
@@ -38,19 +38,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=1, help="Per-GPU micro batch size.")
     parser.add_argument("--gradient-accumulation", type=int, default=16)
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--query-learning-rate", type=float, default=1e-4)
-    parser.add_argument("--head-learning-rate", type=float, default=1e-4)
-    parser.add_argument("--lora-learning-rate", type=float, default=2e-5)
+    parser.add_argument("--token-learning-rate", type=float, default=3e-5)
+    parser.add_argument("--head-learning-rate", type=float, default=3e-5)
+    parser.add_argument("--lora-learning-rate", type=float, default=3e-5)
     parser.add_argument("--use-lora", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--lora-rank", type=int, default=16)
-    parser.add_argument("--lora-alpha", type=float, default=32.0)
+    parser.add_argument("--lora-rank", type=int, default=64)
+    parser.add_argument("--lora-alpha", type=float, default=128.0)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
-    parser.add_argument("--use-rslora", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--train-visual-projection", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--train-position-embeddings", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--train-classifier", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--max-grid-height", type=int, default=64)
-    parser.add_argument("--max-grid-width", type=int, default=64)
+    parser.add_argument("--use-rslora", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--lm-loss-weight", type=float, default=1.0)
+    parser.add_argument("--mask-loss-weight", type=float, default=1.0)
     parser.add_argument("--bce-weight", type=float, default=0.3)
     parser.add_argument("--dice-weight", type=float, default=0.7)
     parser.add_argument("--weight-decay", type=float, default=0.0)
@@ -118,20 +115,18 @@ def checkpoint_config(args: argparse.Namespace) -> dict[str, Any]:
         "attn_implementation": args.attn_implementation,
         "min_pixels": int(args.min_pixels),
         "max_pixels": int(args.max_pixels),
-        "max_grid_height": int(args.max_grid_height),
-        "max_grid_width": int(args.max_grid_width),
         "use_lora": bool(args.use_lora),
         "lora_rank": int(args.lora_rank),
         "lora_alpha": float(args.lora_alpha),
         "lora_dropout": float(args.lora_dropout),
         "use_rslora": bool(args.use_rslora),
-        "train_visual_projection": bool(args.train_visual_projection),
-        "train_position_embeddings": bool(args.train_position_embeddings),
-        "train_classifier": bool(args.train_classifier),
+        "lm_loss_weight": float(args.lm_loss_weight),
+        "mask_loss_weight": float(args.mask_loss_weight),
         "bce_weight": float(args.bce_weight),
         "dice_weight": float(args.dice_weight),
         "initialization": "base_qwen2_vl_without_stamp_weights",
-        "prompt_mode": "strict_query",
+        "prompt_mode": "teacher_forced_seg_then_mask_queries",
+        "architecture": "native_two_stage_stamp",
     }
 
 
@@ -148,11 +143,8 @@ def main() -> int:
         raise ValueError("warmup-ratio must be in [0, 1).")
     if args.bce_weight < 0 or args.dice_weight < 0 or args.bce_weight + args.dice_weight <= 0:
         raise ValueError("Loss weights must be non-negative and not both zero.")
-    if not args.train_classifier:
-        raise ValueError(
-            "The base Qwen checkpoint has no trained segmentation classifier; "
-            "--no-train-classifier is invalid for this fair-from-base experiment."
-        )
+    if args.lm_loss_weight < 0 or args.mask_loss_weight <= 0:
+        raise ValueError("lm-loss-weight must be non-negative and mask-loss-weight must be positive.")
 
     distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -169,7 +161,7 @@ def main() -> int:
         torch.backends.cuda.matmul.allow_tf32 = True
     cudnn_disabled = configure_cudnn(args.disable_cudnn, device)
 
-    dataset = OnePass7BDataset(args.train_json, args.data_root, limit=args.limit, offset=args.offset)
+    dataset = FairStamp7BDataset(args.train_json, args.data_root, limit=args.limit, offset=args.offset)
     if not dataset:
         raise ValueError("Training dataset is empty.")
     sampler = (
@@ -187,7 +179,7 @@ def main() -> int:
         collate_fn=collate_samples,
     )
 
-    model, processor = load_base_onepass_model(
+    model, processor = load_fair_stamp_model(
         stamp_code_dir=args.stamp_code_dir,
         base_model=args.base_model,
         device=device,
@@ -195,22 +187,17 @@ def main() -> int:
         attn_implementation=args.attn_implementation,
         min_pixels=args.min_pixels,
         max_pixels=args.max_pixels,
-        max_grid_height=args.max_grid_height,
-        max_grid_width=args.max_grid_width,
         use_lora=args.use_lora,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         use_rslora=args.use_rslora,
-        train_visual_projection=args.train_visual_projection,
-        train_position_embeddings=args.train_position_embeddings,
-        train_classifier=args.train_classifier,
         allow_existing_segmentation_tokens=args.allow_existing_segmentation_tokens,
         gradient_checkpointing=args.gradient_checkpointing,
     )
     raw_model = model
-    query_parameters = [parameter for parameter in raw_model.query_builder.parameters() if parameter.requires_grad]
-    parameter_groups = [{"params": query_parameters, "lr": args.query_learning_rate, "name": "queries"}]
+    token_parameters = raw_model.token_parameters()
+    parameter_groups = [{"params": token_parameters, "lr": args.token_learning_rate, "name": "tokens"}]
     head_parameters = [parameter for parameter in raw_model.mask_classifier.parameters() if parameter.requires_grad]
     if head_parameters:
         parameter_groups.append({"params": head_parameters, "lr": args.head_learning_rate, "name": "head"})
@@ -246,7 +233,7 @@ def main() -> int:
         "gradient_accumulation": args.gradient_accumulation,
         "world_size": world_size,
         "effective_global_batch_size": args.batch_size * args.gradient_accumulation * world_size,
-        "query_learning_rate": args.query_learning_rate,
+        "token_learning_rate": args.token_learning_rate,
         "head_learning_rate": args.head_learning_rate,
         "lora_learning_rate": args.lora_learning_rate,
         "trainable_parameters": trainable,
@@ -282,11 +269,11 @@ def main() -> int:
         sampler.set_epoch(epoch)
         iterator = tqdm(
             loader,
-            desc=f"onepass7b train epoch {epoch + 1}/{args.epochs}",
+            desc=f"fair STAMP-7B train epoch {epoch + 1}/{args.epochs}",
             dynamic_ncols=True,
             disable=not is_main,
         )
-        running = {"loss": 0.0, "loss_bce": 0.0, "loss_dice": 0.0, "count": 0}
+        running = {"loss": 0.0, "loss_lm": 0.0, "loss_mask": 0.0, "loss_bce": 0.0, "loss_dice": 0.0, "count": 0}
         for batch_index, samples in enumerate(iterator):
             if epoch == start_epoch and batch_index < start_batch:
                 continue
@@ -305,23 +292,36 @@ def main() -> int:
                     enabled=autocast_enabled,
                 ):
                     outputs = model(
-                        input_ids=prepared["input_ids"],
-                        attention_mask=prepared["attention_mask"],
+                        lm_input_ids=prepared["lm_input_ids"],
+                        lm_attention_mask=prepared["lm_attention_mask"],
+                        lm_labels=prepared["lm_labels"],
+                        cls_input_ids=prepared["cls_input_ids"],
+                        cls_attention_mask=prepared["cls_attention_mask"],
                         pixel_values=prepared["pixel_values"],
                         image_grid_thw=prepared["image_grid_thw"],
+                        grid_shapes=prepared["grid_shapes"],
                     )
-                    loss, parts = segmentation_loss(
+                    mask_loss, mask_parts = segmentation_loss(
                         outputs.mask_logits,
                         targets,
                         bce_weight=args.bce_weight,
                         dice_weight=args.dice_weight,
                     )
+                    loss = args.lm_loss_weight * outputs.lm_loss + args.mask_loss_weight * mask_loss
+                    parts = {
+                        "loss": float(loss.detach().item()),
+                        "loss_lm": float(outputs.lm_loss.detach().item()),
+                        "loss_mask": float(mask_loss.detach().item()),
+                        "loss_bce": mask_parts["loss_bce"],
+                        "loss_dice": mask_parts["loss_dice"],
+                    }
                     scaled_loss = loss / args.gradient_accumulation
                 if is_main and epoch == start_epoch and batch_index == start_batch:
                     print(
                         json.dumps(
                             {
-                                "first_batch_input_ids": list(prepared["input_ids"].shape),
+                                "first_batch_lm_input_ids": list(prepared["lm_input_ids"].shape),
+                                "first_batch_cls_input_ids": list(prepared["cls_input_ids"].shape),
                                 "first_batch_pixel_values": list(prepared["pixel_values"].shape),
                                 "first_batch_image_grid_thw": prepared["image_grid_thw"].detach().cpu().tolist(),
                                 "first_batch_grid_shapes": prepared["grid_shapes"],
@@ -333,7 +333,7 @@ def main() -> int:
                         flush=True,
                     )
                 scaled_loss.backward()
-            for key in ("loss", "loss_bce", "loss_dice"):
+            for key in ("loss", "loss_lm", "loss_mask", "loss_bce", "loss_dice"):
                 running[key] += parts[key]
             running["count"] += 1
 
@@ -350,19 +350,18 @@ def main() -> int:
                         "batch": batch_index + 1,
                         "global_step": global_step,
                         "loss": running["loss"] / count,
-                        "loss_bce": running["loss_bce"] / count,
-                        "loss_dice": running["loss_dice"] / count,
+                        **{key: running[key] / count for key in ("loss_lm", "loss_mask", "loss_bce", "loss_dice")},
                         "learning_rates": {
                             group["name"]: group["lr"] for group in optimizer.param_groups
                         },
                     }
                     append_jsonl(history_path, row)
                     iterator.set_postfix(loss=f"{row['loss']:.4f}", step=global_step)
-                    running = {"loss": 0.0, "loss_bce": 0.0, "loss_dice": 0.0, "count": 0}
+                    running = {"loss": 0.0, "loss_lm": 0.0, "loss_mask": 0.0, "loss_bce": 0.0, "loss_dice": 0.0, "count": 0}
                 if is_main and args.save_steps > 0 and global_step % args.save_steps == 0:
                     save_checkpoint(
                         raw_model,
-                        args.output_dir / f"onepass7b_step_{global_step}.pt",
+                        args.output_dir / f"fair_stamp7b_step_{global_step}.pt",
                         config=checkpoint_config(args),
                         epoch=epoch,
                         batch_in_epoch=batch_index + 1,
@@ -374,7 +373,7 @@ def main() -> int:
         if is_main:
             save_checkpoint(
                 raw_model,
-                args.output_dir / f"onepass7b_epoch_{epoch + 1}.pt",
+                args.output_dir / f"fair_stamp7b_epoch_{epoch + 1}.pt",
                 config=checkpoint_config(args),
                 epoch=epoch + 1,
                 batch_in_epoch=0,
@@ -386,13 +385,13 @@ def main() -> int:
     if is_main:
         final_path = save_checkpoint(
             raw_model,
-            args.output_dir / "onepass_qwen7b.pt",
+            args.output_dir / "fair_stamp7b.pt",
             config=checkpoint_config(args),
             epoch=args.epochs,
             batch_in_epoch=0,
             global_step=global_step,
         )
-        print(f"OnePass Qwen2-VL-7B checkpoint written to: {final_path}", flush=True)
+        print(f"Fair native STAMP-7B checkpoint written to: {final_path}", flush=True)
     if distributed:
         dist.barrier()
         dist.destroy_process_group()

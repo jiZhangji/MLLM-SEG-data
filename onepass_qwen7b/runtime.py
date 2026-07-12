@@ -85,6 +85,7 @@ def load_base_onepass_model(
     lora_rank: int = 16,
     lora_alpha: float = 32.0,
     lora_dropout: float = 0.05,
+    use_rslora: bool = False,
     train_visual_projection: bool = True,
     train_position_embeddings: bool = True,
     train_classifier: bool = True,
@@ -146,6 +147,7 @@ def load_base_onepass_model(
             alpha=float(lora_alpha),
             dropout=float(lora_dropout),
             target_names=DEFAULT_TARGETS,
+            use_rslora=use_rslora,
         )
     if gradient_checkpointing:
         backbone.gradient_checkpointing_enable()
@@ -168,4 +170,3 @@ def load_base_onepass_model(
     model.query_builder.initialize_semantic_embeddings(seg_vector, mask_vector)
     model.to(device)
     return model, processor
-
