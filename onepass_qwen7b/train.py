@@ -357,6 +357,7 @@ def main() -> int:
                         },
                     }
                     append_jsonl(history_path, row)
+                    print(json.dumps({"train": row}, ensure_ascii=True), flush=True)
                     iterator.set_postfix(loss=f"{row['loss']:.4f}", step=global_step)
                     running = {"loss": 0.0, "loss_bce": 0.0, "loss_dice": 0.0, "count": 0}
                 if is_main and args.save_steps > 0 and global_step % args.save_steps == 0:
