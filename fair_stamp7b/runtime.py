@@ -46,6 +46,7 @@ def load_fair_stamp_model(
     processor = AutoProcessor.from_pretrained(
         str(base_model),
         trust_remote_code=True,
+        use_fast=False,
         min_pixels=int(min_pixels),
         max_pixels=int(max_pixels),
     )

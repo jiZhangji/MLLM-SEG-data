@@ -116,6 +116,7 @@ def load_base_onepass_model(
     processor = AutoProcessor.from_pretrained(
         model_name,
         trust_remote_code=True,
+        use_fast=False,
         min_pixels=int(min_pixels),
         max_pixels=int(max_pixels),
     )
