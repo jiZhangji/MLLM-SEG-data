@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
         help="Disabled by default for high-memory H200 runs.",
     )
     parser.add_argument("--learning-rate", type=float, default=3e-5)
+    parser.add_argument("--attn-implementation", default="sdpa")
     parser.add_argument("--lora-rank", type=int, default=64)
     parser.add_argument("--lora-alpha", type=float, default=128.0)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
@@ -101,6 +102,7 @@ def main() -> int:
         "--batch-size", str(args.batch_size),
         "--gradient-accumulation", str(grad_accum),
         "--num-workers", str(args.num_workers),
+        "--attn-implementation", str(args.attn_implementation),
         "--lora-rank", str(args.lora_rank),
         "--lora-alpha", str(args.lora_alpha),
         "--lora-dropout", str(args.lora_dropout),
@@ -124,6 +126,7 @@ def main() -> int:
         "gradient_accumulation": grad_accum,
         "effective_global_batch_size": args.target_global_batch_size,
         "learning_rate": args.learning_rate,
+        "attn_implementation": args.attn_implementation,
         "gradient_checkpointing": args.gradient_checkpointing,
         "lora_rank": args.lora_rank,
         "lora_alpha": args.lora_alpha,
