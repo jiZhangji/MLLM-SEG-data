@@ -23,6 +23,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=1, help="Fallback per-GPU batch size.")
     parser.add_argument("--onepass-batch-size", type=int, help="Per-GPU OnePass micro batch size.")
     parser.add_argument("--stamp-batch-size", type=int, help="Per-GPU native STAMP micro batch size.")
+    parser.add_argument("--onepass-max-grid-height", type=int, default=512)
+    parser.add_argument("--onepass-max-grid-width", type=int, default=512)
     parser.add_argument("--target-global-batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument(
@@ -147,6 +149,8 @@ def main() -> int:
         "nproc_per_node": args.nproc_per_node,
         "onepass_gradient_accumulation": onepass_grad_accum,
         "stamp_gradient_accumulation": stamp_grad_accum,
+        "onepass_max_grid_height": args.onepass_max_grid_height,
+        "onepass_max_grid_width": args.onepass_max_grid_width,
         "effective_global_batch_size": args.target_global_batch_size,
         "learning_rate": args.learning_rate,
         "attn_implementation": args.attn_implementation,
@@ -166,6 +170,8 @@ def main() -> int:
         onepass_args = training_args(output, onepass_batch_size, onepass_grad_accum)
         onepass_args += [
             "--use-rslora",
+            "--max-grid-height", str(args.onepass_max_grid_height),
+            "--max-grid-width", str(args.onepass_max_grid_width),
             "--query-learning-rate", str(args.learning_rate),
             "--head-learning-rate", str(args.learning_rate),
             "--lora-learning-rate", str(args.learning_rate),

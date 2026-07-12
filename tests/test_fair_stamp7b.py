@@ -7,6 +7,7 @@ from fair_stamp7b.data import _last_subsequence
 from fair_stamp7b.model import SpecialTokenInputAdapter, SpecialTokenOutputAdapter
 from onepass_stamp.lora import OnePassLoRALinear
 from onepass_qwen7b.runtime import enable_gradient_checkpointing
+from onepass_qwen7b.model import SegMaskQueryBuilder
 
 
 def test_last_subsequence_uses_final_assistant_header() -> None:
@@ -62,3 +63,11 @@ def test_gradient_checkpointing_is_non_reentrant() -> None:
     enable_gradient_checkpointing(model)
     assert model.kwargs == {"use_reentrant": False}
     assert model.config.use_cache is False
+
+
+def test_onepass_query_table_supports_wide_dynamic_grid() -> None:
+    builder = SegMaskQueryBuilder(hidden_size=4, max_grid_height=512, max_grid_width=512)
+    queries = builder.spatial_queries(
+        torch.randn(13 * 80, 4), [(13, 80)], output_dtype=torch.float32
+    )
+    assert queries.shape == (1040, 4)

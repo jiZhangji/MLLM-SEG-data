@@ -88,8 +88,8 @@ class OnePassQwen7B(nn.Module):
         seg_token_id: int,
         mask_token_id: int,
         merge_size: int,
-        max_grid_height: int = 64,
-        max_grid_width: int = 64,
+        max_grid_height: int = 512,
+        max_grid_width: int = 512,
         train_visual_projection: bool = True,
         train_position_embeddings: bool = True,
         train_classifier: bool = True,
@@ -257,4 +257,3 @@ def segmentation_loss(
         "loss_bce": float(loss_bce.detach().item()),
         "loss_dice": float(loss_dice.detach().item()),
     }
-
