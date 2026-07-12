@@ -20,7 +20,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nproc-per-node", type=int, default=1)
     parser.add_argument("--cuda-visible-devices", default="0")
     parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=1, help="Per-GPU micro batch size.")
+    parser.add_argument("--batch-size", type=int, default=1, help="Fallback per-GPU batch size.")
+    parser.add_argument("--onepass-batch-size", type=int, help="Per-GPU OnePass micro batch size.")
+    parser.add_argument("--stamp-batch-size", type=int, help="Per-GPU native STAMP micro batch size.")
     parser.add_argument("--target-global-batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument(
@@ -72,15 +74,27 @@ def launch(command: list[str], log_path: Path, environment: dict[str, str]) -> N
 
 def main() -> int:
     args = parse_args()
-    if args.nproc_per_node <= 0 or args.batch_size <= 0 or args.target_global_batch_size <= 0:
-        raise ValueError("nproc-per-node, batch-size and target-global-batch-size must be positive.")
-    micro_global = args.nproc_per_node * args.batch_size
-    if args.target_global_batch_size % micro_global:
-        raise ValueError(
-            f"target-global-batch-size={args.target_global_batch_size} must be divisible by "
-            f"nproc-per-node * batch-size = {micro_global}."
-        )
-    grad_accum = args.target_global_batch_size // micro_global
+    onepass_batch_size = args.onepass_batch_size or args.batch_size
+    stamp_batch_size = args.stamp_batch_size or args.batch_size
+    if min(
+        args.nproc_per_node,
+        onepass_batch_size,
+        stamp_batch_size,
+        args.target_global_batch_size,
+    ) <= 0:
+        raise ValueError("Process count, batch sizes and target global batch size must be positive.")
+
+    def gradient_accumulation(batch_size: int, name: str) -> int:
+        micro_global = args.nproc_per_node * batch_size
+        if args.target_global_batch_size % micro_global:
+            raise ValueError(
+                f"target-global-batch-size={args.target_global_batch_size} must be divisible by "
+                f"{name} micro global batch={micro_global}."
+            )
+        return args.target_global_batch_size // micro_global
+
+    onepass_grad_accum = gradient_accumulation(onepass_batch_size, "OnePass")
+    stamp_grad_accum = gradient_accumulation(stamp_batch_size, "STAMP")
     args.output_root.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     environment["CUDA_VISIBLE_DEVICES"] = args.cuda_visible_devices
@@ -97,10 +111,7 @@ def main() -> int:
         "--stamp-code-dir", str(args.stamp_code_dir),
         "--base-model", str(args.base_model),
         "--train-json", *[str(path) for path in args.train_json],
-        "--output-dir", "PLACEHOLDER",
         "--epochs", str(args.epochs),
-        "--batch-size", str(args.batch_size),
-        "--gradient-accumulation", str(grad_accum),
         "--num-workers", str(args.num_workers),
         "--attn-implementation", str(args.attn_implementation),
         "--lora-rank", str(args.lora_rank),
@@ -117,13 +128,25 @@ def main() -> int:
     common.append(
         "--gradient-checkpointing" if args.gradient_checkpointing else "--no-gradient-checkpointing"
     )
+
+    def training_args(output: Path, batch_size: int, grad_accum: int) -> list[str]:
+        return [
+            *common,
+            "--output-dir", str(output),
+            "--batch-size", str(batch_size),
+            "--gradient-accumulation", str(grad_accum),
+        ]
+
     manifest = {
         "base_model": str(args.base_model),
         "train_json": [str(path) for path in args.train_json],
         "epochs": args.epochs,
-        "per_gpu_batch_size": args.batch_size,
+        "execution_order": ["onepass7b", "stamp7b_native"],
+        "onepass_per_gpu_batch_size": onepass_batch_size,
+        "stamp_per_gpu_batch_size": stamp_batch_size,
         "nproc_per_node": args.nproc_per_node,
-        "gradient_accumulation": grad_accum,
+        "onepass_gradient_accumulation": onepass_grad_accum,
+        "stamp_gradient_accumulation": stamp_grad_accum,
         "effective_global_batch_size": args.target_global_batch_size,
         "learning_rate": args.learning_rate,
         "attn_implementation": args.attn_implementation,
@@ -138,21 +161,9 @@ def main() -> int:
     (args.output_root / "fair_experiment_manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=True), encoding="utf-8"
     )
-    if not args.skip_stamp:
-        output = args.output_root / "stamp7b_native"
-        stamp_args = [value if value != "PLACEHOLDER" else str(output) for value in common]
-        stamp_args += [
-            "--use-rslora",
-            "--token-learning-rate", str(args.learning_rate),
-            "--head-learning-rate", str(args.learning_rate),
-            "--lora-learning-rate", str(args.learning_rate),
-        ]
-        if args.resume_stamp is not None:
-            stamp_args += ["--resume", str(args.resume_stamp)]
-        launch(launcher + ["-m", "fair_stamp7b.train", *stamp_args], output / "train.log", environment)
     if not args.skip_onepass:
         output = args.output_root / "onepass7b"
-        onepass_args = [value if value != "PLACEHOLDER" else str(output) for value in common]
+        onepass_args = training_args(output, onepass_batch_size, onepass_grad_accum)
         onepass_args += [
             "--use-rslora",
             "--query-learning-rate", str(args.learning_rate),
@@ -162,6 +173,18 @@ def main() -> int:
         if args.resume_onepass is not None:
             onepass_args += ["--resume", str(args.resume_onepass)]
         launch(launcher + ["-m", "onepass_qwen7b.train", *onepass_args], output / "train.log", environment)
+    if not args.skip_stamp:
+        output = args.output_root / "stamp7b_native"
+        stamp_args = training_args(output, stamp_batch_size, stamp_grad_accum)
+        stamp_args += [
+            "--use-rslora",
+            "--token-learning-rate", str(args.learning_rate),
+            "--head-learning-rate", str(args.learning_rate),
+            "--lora-learning-rate", str(args.learning_rate),
+        ]
+        if args.resume_stamp is not None:
+            stamp_args += ["--resume", str(args.resume_stamp)]
+        launch(launcher + ["-m", "fair_stamp7b.train", *stamp_args], output / "train.log", environment)
     print(f"\nBoth requested experiments completed under: {args.output_root}", flush=True)
     return 0
 
