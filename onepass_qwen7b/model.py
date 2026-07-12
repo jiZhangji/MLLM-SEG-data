@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from onepass_stamp.lora import OnePassLoRALinear, lora_parameters
+
+
+def hidden_size(config: Any) -> int:
+    value = getattr(config, "hidden_size", None)
+    if value is None and hasattr(config, "text_config"):
+        value = getattr(config.text_config, "hidden_size", None)
+    if value is None:
+        raise AttributeError("Could not determine Qwen2-VL hidden size.")
+    return int(value)
+
+
+@dataclass
+class OnePass7BOutput:
+    mask_logits: list[torch.Tensor]
+    grid_shapes: list[tuple[int, int]]
+    seg_hidden: torch.Tensor
+
+
+class SegMaskQueryBuilder(nn.Module):
+    def __init__(self, hidden_size: int, max_grid_height: int, max_grid_width: int) -> None:
+        super().__init__()
+        self.hidden_size = int(hidden_size)
+        self.max_grid_height = int(max_grid_height)
+        self.max_grid_width = int(max_grid_width)
+        self.seg_embedding = nn.Parameter(torch.empty(hidden_size))
+        self.mask_embedding = nn.Parameter(torch.empty(hidden_size))
+        self.visual_projection = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.row_embedding = nn.Embedding(max_grid_height, hidden_size)
+        self.col_embedding = nn.Embedding(max_grid_width, hidden_size)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.normal_(self.seg_embedding, std=0.02)
+        nn.init.normal_(self.mask_embedding, std=0.02)
+        nn.init.eye_(self.visual_projection.weight)
+        nn.init.zeros_(self.row_embedding.weight)
+        nn.init.zeros_(self.col_embedding.weight)
+
+    def initialize_semantic_embeddings(self, seg_vector: torch.Tensor, mask_vector: torch.Tensor) -> None:
+        with torch.no_grad():
+            self.seg_embedding.copy_(seg_vector.to(self.seg_embedding))
+            self.mask_embedding.copy_(mask_vector.to(self.mask_embedding))
+
+    def spatial_queries(
+        self,
+        visual_features: torch.Tensor,
+        grid_shapes: list[tuple[int, int]],
+        output_dtype: torch.dtype,
+    ) -> torch.Tensor:
+        expected = sum(height * width for height, width in grid_shapes)
+        if visual_features.shape[0] != expected:
+            raise ValueError(f"Visual feature count {visual_features.shape[0]} does not match {expected} queries.")
+        parameter_dtype = self.visual_projection.weight.dtype
+        projected = self.visual_projection(visual_features.to(parameter_dtype))
+        rows = []
+        cols = []
+        for height, width in grid_shapes:
+            if height > self.max_grid_height or width > self.max_grid_width:
+                raise ValueError(
+                    f"Grid {(height, width)} exceeds configured maximum "
+                    f"{(self.max_grid_height, self.max_grid_width)}."
+                )
+            rows.append(torch.arange(height, device=visual_features.device).repeat_interleave(width))
+            cols.append(torch.arange(width, device=visual_features.device).repeat(height))
+        row_ids = torch.cat(rows)
+        col_ids = torch.cat(cols)
+        position = self.row_embedding(row_ids) + self.col_embedding(col_ids)
+        queries = projected + position + self.mask_embedding.to(parameter_dtype)
+        return queries.to(output_dtype)
+
+
+class OnePassQwen7B(nn.Module):
+    """One-forward segmentation initialized only from a base Qwen2-VL checkpoint."""
+
+    def __init__(
+        self,
+        backbone: nn.Module,
+        seg_token_id: int,
+        mask_token_id: int,
+        merge_size: int,
+        max_grid_height: int = 64,
+        max_grid_width: int = 64,
+        train_visual_projection: bool = True,
+        train_position_embeddings: bool = True,
+        train_classifier: bool = True,
+    ) -> None:
+        super().__init__()
+        self.backbone = backbone
+        self.seg_token_id = int(seg_token_id)
+        self.mask_token_id = int(mask_token_id)
+        self.merge_size = int(merge_size)
+        self.query_builder = SegMaskQueryBuilder(
+            hidden_size(backbone.config), max_grid_height, max_grid_width
+        )
+        self.train_visual_projection = bool(train_visual_projection)
+        self.train_position_embeddings = bool(train_position_embeddings)
+        self.train_classifier = bool(train_classifier)
+        self.freeze_base_parameters()
+
+    @property
+    def mask_classifier(self) -> nn.Module:
+        return self.backbone.classifier
+
+    def freeze_base_parameters(self) -> None:
+        for parameter in self.backbone.parameters():
+            parameter.requires_grad = False
+        for parameter in lora_parameters(self.backbone):
+            parameter.requires_grad = True
+        for parameter in self.query_builder.parameters():
+            parameter.requires_grad = True
+        if not self.train_visual_projection:
+            for parameter in self.query_builder.visual_projection.parameters():
+                parameter.requires_grad = False
+        if not self.train_position_embeddings:
+            for parameter in self.query_builder.row_embedding.parameters():
+                parameter.requires_grad = False
+            for parameter in self.query_builder.col_embedding.parameters():
+                parameter.requires_grad = False
+        for parameter in self.mask_classifier.parameters():
+            parameter.requires_grad = self.train_classifier
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        self.backbone.train(mode)
+        for module in self.backbone.modules():
+            if isinstance(module, OnePassLoRALinear):
+                module.train(mode)
+        self.query_builder.train(mode)
+        self.mask_classifier.train(mode and self.train_classifier)
+        return self
+
+    def lora_parameters(self) -> list[nn.Parameter]:
+        return lora_parameters(self.backbone)
+
+    def trainable_parameters(self) -> list[nn.Parameter]:
+        return [parameter for parameter in self.parameters() if parameter.requires_grad]
+
+    @staticmethod
+    def flatten_image_features(features: Any) -> torch.Tensor:
+        if torch.is_tensor(features):
+            if features.ndim == 3:
+                return features.reshape(-1, features.shape[-1])
+            if features.ndim == 2:
+                return features
+            raise ValueError(f"Unexpected image feature shape {tuple(features.shape)}")
+        values = list(features)
+        if not values:
+            raise ValueError("Vision encoder returned no image features.")
+        return torch.cat(values, dim=0)
+
+    def grid_shapes(self, image_grid_thw: torch.Tensor) -> list[tuple[int, int]]:
+        shapes = []
+        for grid in image_grid_thw:
+            temporal, raw_height, raw_width = (int(value) for value in grid.tolist())
+            if temporal != 1 or raw_height % self.merge_size or raw_width % self.merge_size:
+                raise ValueError(
+                    f"Unsupported image grid {(temporal, raw_height, raw_width)} "
+                    f"for merge_size={self.merge_size}."
+                )
+            shapes.append((raw_height // self.merge_size, raw_width // self.merge_size))
+        return shapes
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        pixel_values: torch.Tensor,
+        image_grid_thw: torch.Tensor,
+    ) -> OnePass7BOutput:
+        seg_positions = input_ids.eq(self.seg_token_id) & attention_mask.bool()
+        mask_positions = input_ids.eq(self.mask_token_id) & attention_mask.bool()
+        seg_counts = seg_positions.sum(dim=1)
+        if not torch.all(seg_counts.eq(1)):
+            raise ValueError(f"Each sample must contain one SEG query; got {seg_counts.tolist()}.")
+        grid_shapes = self.grid_shapes(image_grid_thw)
+        expected = torch.tensor(
+            [height * width for height, width in grid_shapes],
+            device=input_ids.device,
+            dtype=torch.long,
+        )
+        actual = mask_positions.sum(dim=1)
+        if not torch.equal(actual, expected):
+            raise ValueError(f"Mask counts {actual.tolist()} do not match visual grids {expected.tolist()}.")
+
+        inputs_embeds = self.backbone.model.get_input_embeddings()(input_ids).clone()
+        raw_features = self.backbone.model.get_image_features(pixel_values, image_grid_thw)
+        image_features = self.flatten_image_features(raw_features).to(inputs_embeds)
+        image_mask, _ = self.backbone.model.get_placeholder_mask(
+            input_ids, inputs_embeds=inputs_embeds, image_features=image_features
+        )
+        inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_features)
+        if image_features.shape[0] != int(expected.sum().item()):
+            raise ValueError(
+                f"Merged image feature count {image_features.shape[0]} does not match "
+                f"mask-query count {int(expected.sum().item())}."
+            )
+        inputs_embeds[seg_positions] = self.query_builder.seg_embedding.to(inputs_embeds.dtype)
+        spatial_queries = self.query_builder.spatial_queries(
+            image_features, grid_shapes, output_dtype=inputs_embeds.dtype
+        )
+        inputs_embeds[mask_positions] = spatial_queries
+
+        outputs = self.backbone.model(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            pixel_values=None,
+            image_grid_thw=image_grid_thw,
+            seg_mask=mask_positions,
+            use_cache=False,
+            output_hidden_states=False,
+            return_dict=True,
+        )
+        hidden = outputs.last_hidden_state
+        flat_logits = self.mask_classifier(hidden[mask_positions]).squeeze(-1)
+        mask_logits = list(flat_logits.split(expected.tolist()))
+        seg_hidden = hidden[seg_positions].reshape(input_ids.shape[0], -1)
+        return OnePass7BOutput(mask_logits=mask_logits, grid_shapes=grid_shapes, seg_hidden=seg_hidden)
+
+
+def segmentation_loss(
+    mask_logits: list[torch.Tensor],
+    targets: list[torch.Tensor],
+    bce_weight: float = 0.3,
+    dice_weight: float = 0.7,
+    eps: float = 1.0,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    if len(mask_logits) != len(targets) or not mask_logits:
+        raise ValueError("mask_logits and targets must be non-empty lists with equal length.")
+    bce_values = []
+    dice_values = []
+    for logits, target in zip(mask_logits, targets):
+        logits = logits.float().reshape(-1)
+        target = target.to(device=logits.device, dtype=torch.float32).reshape(-1)
+        if logits.shape != target.shape:
+            raise ValueError(f"Logit/target mismatch: {tuple(logits.shape)} vs {tuple(target.shape)}")
+        bce_values.append(F.binary_cross_entropy_with_logits(logits, target))
+        probability = torch.sigmoid(logits)
+        intersection = (probability * target).sum()
+        dice = 1.0 - (2.0 * intersection + eps) / (probability.sum() + target.sum() + eps)
+        dice_values.append(dice)
+    loss_bce = torch.stack(bce_values).mean()
+    loss_dice = torch.stack(dice_values).mean()
+    loss = float(bce_weight) * loss_bce + float(dice_weight) * loss_dice
+    return loss, {
+        "loss": float(loss.detach().item()),
+        "loss_bce": float(loss_bce.detach().item()),
+        "loss_dice": float(loss_dice.detach().item()),
+    }
+
