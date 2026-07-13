@@ -65,3 +65,7 @@ def load_checkpoint(
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
     return checkpoint
 
+
+def read_checkpoint_config(path: str | Path) -> dict[str, Any]:
+    checkpoint = torch.load(Path(path), map_location="cpu", weights_only=False)
+    return dict(checkpoint.get("config", {}))

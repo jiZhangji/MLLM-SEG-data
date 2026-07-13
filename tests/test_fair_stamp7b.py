@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+from types import SimpleNamespace
 
 from fair_stamp7b.data import _last_subsequence
+from fair_stamp7b.eval import build_classification_batch
 from fair_stamp7b.model import SpecialTokenInputAdapter, SpecialTokenOutputAdapter
 from onepass_stamp.lora import OnePassLoRALinear
 from onepass_qwen7b.runtime import enable_gradient_checkpointing
@@ -71,3 +73,35 @@ def test_onepass_query_table_supports_wide_dynamic_grid() -> None:
         torch.randn(13 * 80, 4), [(13, 80)], output_dtype=torch.float32
     )
     assert queries.shape == (1040, 4)
+
+
+def test_stamp_eval_builds_queries_after_generated_seg() -> None:
+    class Tokenizer:
+        pad_token_id = 0
+        eos_token_id = 9
+
+        def convert_tokens_to_ids(self, token):
+            return {"<|seg|>": 5, "<|mask|>": 6}[token]
+
+        def decode(self, values, skip_special_tokens=False):
+            del skip_special_tokens
+            return " ".join(str(int(value)) for value in values)
+
+    processor = SimpleNamespace(
+        tokenizer=Tokenizer(), image_processor=SimpleNamespace(merge_size=2)
+    )
+    encoded = {
+        "input_ids": torch.tensor([[0, 10, 11], [20, 21, 22]]),
+        "attention_mask": torch.tensor([[0, 1, 1], [1, 1, 1]]),
+        "image_grid_thw": torch.tensor([[1, 4, 6], [1, 8, 4]]),
+    }
+    generated = torch.tensor([[0, 10, 11, 30, 5, 0], [20, 21, 22, 31, 32, 0]])
+    ids, attention, grids, found, _ = build_classification_batch(
+        encoded, generated, processor
+    )
+    assert grids == [(2, 3), (4, 2)]
+    assert found == [True, False]
+    assert int((ids[0] == 6).sum()) == 6
+    assert int((ids[1] == 6).sum()) == 8
+    assert int(attention[0].sum()) == 10
+    assert int(attention[1].sum()) == 12

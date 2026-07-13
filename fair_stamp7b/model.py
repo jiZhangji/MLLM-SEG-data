@@ -149,6 +149,28 @@ class FairSTAMP7B(nn.Module):
             use_cache=False,
             return_dict=True,
         )
+        mask_logits = self.classify_masks(
+            cls_input_ids=cls_input_ids,
+            cls_attention_mask=cls_attention_mask,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            grid_shapes=grid_shapes,
+        )
+        return FairStamp7BOutput(
+            lm_loss=lm_output.loss,
+            mask_logits=mask_logits,
+            grid_shapes=grid_shapes,
+        )
+
+    def classify_masks(
+        self,
+        *,
+        cls_input_ids: torch.Tensor,
+        cls_attention_mask: torch.Tensor,
+        pixel_values: torch.Tensor,
+        image_grid_thw: torch.Tensor,
+        grid_shapes: list[tuple[int, int]],
+    ) -> list[torch.Tensor]:
         mask_positions = cls_input_ids.eq(self.mask_token_id) & cls_attention_mask.bool()
         expected = [height * width for height, width in grid_shapes]
         actual = mask_positions.sum(dim=1).tolist()
@@ -165,11 +187,7 @@ class FairSTAMP7B(nn.Module):
             return_dict=True,
         )
         flat_logits = cls_output.bi_logits[mask_positions].reshape(-1)
-        return FairStamp7BOutput(
-            lm_loss=lm_output.loss,
-            mask_logits=list(flat_logits.split(expected)),
-            grid_shapes=grid_shapes,
-        )
+        return list(flat_logits.split(expected))
 
 
 __all__ = [
