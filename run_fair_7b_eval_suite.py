@@ -33,7 +33,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_pair(tasks: list[dict[str, Any]], skip_existing: bool) -> None:
+def run_group(tasks: list[dict[str, Any]], skip_existing: bool, serial: bool) -> None:
+    if serial:
+        for task in tasks:
+            run_group([task], skip_existing, serial=False)
+        return
     running: list[tuple[dict[str, Any], subprocess.Popen[Any], Any]] = []
     for task in tasks:
         summary = task["output_dir"] / "eval_summary.json"
@@ -108,8 +112,8 @@ def comparison(output_root: Path) -> None:
 def main() -> int:
     args = parse_args()
     gpus = [value.strip() for value in args.gpus.split(",") if value.strip()]
-    if len(gpus) != 2:
-        raise ValueError("--gpus must contain exactly two GPU IDs, for example 0,1.")
+    if len(gpus) not in (1, 2):
+        raise ValueError("--gpus must contain one or two GPU IDs, for example 0 or 0,1.")
     if min(args.onepass_batch_size, args.stamp_batch_size, args.num_workers, args.max_new_tokens) <= 0:
         raise ValueError("Batch sizes, workers and max-new-tokens must be positive.")
     for checkpoint in (args.onepass_checkpoint, args.stamp_checkpoint):
@@ -128,7 +132,10 @@ def main() -> int:
         "--max-pixels", str(args.max_pixels),
         "--limit", str(args.limit),
     ]
-    splits = (("val", args.val_json, gpus[0]), ("test", args.test_json, gpus[1]))
+    splits = (
+        ("val", args.val_json, gpus[0]),
+        ("test", args.test_json, gpus[0] if len(gpus) == 1 else gpus[1]),
+    )
     onepass_tasks = []
     stamp_tasks = []
     for split, json_path, gpu in splits:
@@ -165,10 +172,12 @@ def main() -> int:
                 ],
             }
         )
-    print("=== Phase 1: OnePass val/test in parallel ===", flush=True)
-    run_pair(onepass_tasks, args.skip_existing)
-    print("=== Phase 2: native STAMP val/test in parallel ===", flush=True)
-    run_pair(stamp_tasks, args.skip_existing)
+    serial = len(gpus) == 1
+    mode = "serial" if serial else "parallel"
+    print(f"=== Phase 1: OnePass val/test ({mode}) ===", flush=True)
+    run_group(onepass_tasks, args.skip_existing, serial)
+    print(f"=== Phase 2: native STAMP val/test ({mode}) ===", flush=True)
+    run_group(stamp_tasks, args.skip_existing, serial)
     comparison(args.output_root)
     return 0
 
