@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stamp-batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--max-new-tokens", type=int, default=64)
+    parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--dtype", choices=("bf16", "fp16", "fp32"), default="bf16")
     parser.add_argument("--attn-implementation", default="sdpa")
     parser.add_argument("--min-pixels", type=int, default=802816)
@@ -125,6 +126,7 @@ def main() -> int:
         "--attn-implementation", args.attn_implementation,
         "--min-pixels", str(args.min_pixels),
         "--max-pixels", str(args.max_pixels),
+        "--limit", str(args.limit),
     ]
     splits = (("val", args.val_json, gpus[0]), ("test", args.test_json, gpus[1]))
     onepass_tasks = []
@@ -173,4 +175,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
