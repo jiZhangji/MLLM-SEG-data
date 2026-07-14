@@ -80,7 +80,7 @@ class SegMaskQueryBuilder(nn.Module):
 
 
 class OnePassQwen7B(nn.Module):
-    """One-forward segmentation initialized only from a base Qwen2-VL checkpoint."""
+    """One-forward segmentation with either base or STAMP-LoRA initialization."""
 
     def __init__(
         self,

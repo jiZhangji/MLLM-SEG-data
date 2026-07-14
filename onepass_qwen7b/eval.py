@@ -167,7 +167,7 @@ def main() -> int:
         "end_to_end_seconds_per_sample": end_to_end_seconds / max(len(rows), 1),
         "model_calls": len(loader),
         "autoregressive_generate_calls": 0,
-        "initialization": "base_qwen2_vl_without_stamp_weights",
+        "initialization": str(config.get("initialization", "base_qwen2_vl_without_stamp_weights")),
         "prompt_mode": "strict_query",
         "rows_csv": str(rows_path),
     }

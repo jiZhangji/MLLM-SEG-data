@@ -2,7 +2,8 @@
 
 This package trains query-driven referring segmentation from an untrained
 Qwen2-VL-7B base checkpoint. It reuses STAMP's source-level Hybrid Attention
-mechanism but does not initialize from STAMP segmentation weights.
+mechanism. The default path does not initialize from STAMP segmentation
+weights; `--stamp-adapter` enables a separate STAMP-LoRA warm-start experiment.
 
 ## Input and attention
 
@@ -40,6 +41,21 @@ interaction through STAMP's Hybrid Attention mask.
 The loader rejects checkpoints whose tokenizer already contains SEG/MASK by
 default, preventing accidental STAMP-weight initialization.
 
+## STAMP-LoRA warm start
+
+Pass `--stamp-adapter /path/to/STAMP-7B-lora` to initialize every compatible
+language-model LoRA A/B tensor from the trained STAMP PEFT adapter. The loader
+reads `adapter_config.json` and automatically adopts its rank, alpha, dropout,
+target modules, and RS-LoRA scaling. By default it also initializes the
+same-shaped scalar mask classifier; use `--no-stamp-init-classifier` for a
+LoRA-only initialization ablation.
+
+The OnePass-specific SEG/MASK queries, visual projection, and row/column
+embeddings remain OnePass modules and are optimized together with the loaded
+LoRA tensors. Saved OnePass checkpoints contain the complete trained LoRA,
+query, and classifier state, so evaluation does not need to reload the source
+STAMP adapter.
+
 ## Training and inference
 
 Training uses weighted BCE plus Dice and supports DDP, gradient accumulation,
@@ -48,4 +64,3 @@ Inference uses exactly the same strict-query input and never calls `generate()`
 or a second model forward.
 
 Start with a 16-sample overfit test before any full-data run.
-

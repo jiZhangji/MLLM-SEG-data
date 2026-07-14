@@ -22,6 +22,7 @@ from .checkpoint import load_checkpoint, save_checkpoint
 from .data import OnePass7BDataset, collate_samples, grid_targets, prepare_batch
 from .model import segmentation_loss
 from .runtime import configure_cudnn, load_base_onepass_model
+from .stamp_adapter import load_stamp_adapter_initialization, read_stamp_adapter_config
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,6 +33,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument(
+        "--stamp-adapter",
+        type=Path,
+        help="Initialize compatible LoRA tensors from a STAMP PEFT adapter directory.",
+    )
+    parser.add_argument(
+        "--stamp-init-classifier",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Also initialize the shared scalar mask classifier from the STAMP adapter.",
+    )
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=1)
@@ -111,6 +123,7 @@ def linear_schedule(total_steps: int, warmup_ratio: float):
 
 
 def checkpoint_config(args: argparse.Namespace) -> dict[str, Any]:
+    initialization = "stamp_7b_lora_warm_start" if args.stamp_adapter else "base_qwen2_vl_without_stamp_weights"
     return {
         "base_model": str(args.base_model),
         "stamp_code_dir": str(args.stamp_code_dir),
@@ -130,7 +143,9 @@ def checkpoint_config(args: argparse.Namespace) -> dict[str, Any]:
         "train_classifier": bool(args.train_classifier),
         "bce_weight": float(args.bce_weight),
         "dice_weight": float(args.dice_weight),
-        "initialization": "base_qwen2_vl_without_stamp_weights",
+        "initialization": initialization,
+        "stamp_adapter": str(args.stamp_adapter.resolve()) if args.stamp_adapter else None,
+        "stamp_init_classifier": bool(args.stamp_adapter and args.stamp_init_classifier),
         "prompt_mode": "strict_query",
     }
 
@@ -149,10 +164,16 @@ def main() -> int:
     if args.bce_weight < 0 or args.dice_weight < 0 or args.bce_weight + args.dice_weight <= 0:
         raise ValueError("Loss weights must be non-negative and not both zero.")
     if not args.train_classifier:
-        raise ValueError(
-            "The base Qwen checkpoint has no trained segmentation classifier; "
-            "--no-train-classifier is invalid for this fair-from-base experiment."
-        )
+        raise ValueError("The OnePass mask classifier must remain trainable.")
+    adapter_config = None
+    if args.stamp_adapter is not None:
+        if not args.use_lora:
+            raise ValueError("--stamp-adapter requires --use-lora.")
+        adapter_config = read_stamp_adapter_config(args.stamp_adapter)
+        args.lora_rank = adapter_config.rank
+        args.lora_alpha = adapter_config.alpha
+        args.lora_dropout = adapter_config.dropout
+        args.use_rslora = adapter_config.use_rslora
 
     distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -209,6 +230,13 @@ def main() -> int:
         gradient_checkpointing=args.gradient_checkpointing,
     )
     raw_model = model
+    adapter_report = None
+    if args.stamp_adapter is not None:
+        adapter_report = load_stamp_adapter_initialization(
+            raw_model,
+            args.stamp_adapter,
+            initialize_classifier=args.stamp_init_classifier,
+        )
     query_parameters = [parameter for parameter in raw_model.query_builder.parameters() if parameter.requires_grad]
     parameter_groups = [{"params": query_parameters, "lr": args.query_learning_rate, "name": "queries"}]
     head_parameters = [parameter for parameter in raw_model.mask_classifier.parameters() if parameter.requires_grad]
@@ -253,6 +281,7 @@ def main() -> int:
         "total_parameters": total,
         "total_optimizer_steps": total_steps,
         "cudnn_disabled": cudnn_disabled,
+        "stamp_adapter_initialization": adapter_report,
     }
     if is_main:
         trainable_rows = [
