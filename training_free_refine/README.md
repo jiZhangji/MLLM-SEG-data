@@ -35,3 +35,13 @@ overlay, coarse STAMP overlay, uncertainty, and refined overlay.
 
 Run the full validation split before test. Fix the configuration after
 validation and evaluate test only once to preserve the training-free protocol.
+
+To run unit tests, complete RefCOCOg val, complete test, and the final combined
+comparison sequentially with one script:
+
+```bash
+bash run_training_free_refine_full_eval.sh
+```
+
+The combined report is written to
+`../outputs/training_free_refine_refcocog_full_comparison/combined_summary.md`.
