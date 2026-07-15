@@ -11,11 +11,15 @@ EVAL_LIMIT="${TEXT4SEG_EVAL_LIMIT:-0}"
 CUDA_DEVICE="${CUDA_DEVICE:-0}"
 RESULTS_ROOT="${TEXT4SEG_RESULTS_ROOT:-${ROOT}/outputs/text4seg_official_refcocog_val}"
 REFINE_OUTPUT="${TEXT4SEG_REFINE_OUTPUT:-${ROOT}/outputs/text4seg_training_free_refcocog_val}"
-SAM_PATH="${TEXT4SEG_SAM_PATH:-${ROOT}/models/sam_vit_h_4b8939.pth}"
+DEFAULT_SAM_PATH="${ROOT}/models/sam_vit_h_4b8939.pth"
+if [[ -f "${ROOT}/models/SAM/sam_vit_h_4b8939.pth" ]]; then
+  DEFAULT_SAM_PATH="${ROOT}/models/SAM/sam_vit_h_4b8939.pth"
+fi
+SAM_PATH="${TEXT4SEG_SAM_PATH:-${DEFAULT_SAM_PATH}}"
 
 export HF_HOME="${HF_HOME:-${ROOT}/.cache/huggingface}"
 export TOKENIZERS_PARALLELISM=false
-mkdir -p "${ROOT}/code" "${ROOT}/models" "${ROOT}/outputs" "${HF_HOME}"
+mkdir -p "${ROOT}/code" "${ROOT}/models" "${ROOT}/outputs" "${HF_HOME}" "$(dirname "${SAM_PATH}")"
 
 echo "[1/7] Fetching official Text4Seg code"
 if [[ ! -d "${TEXT4SEG_DIR}/.git" ]]; then
@@ -51,7 +55,7 @@ if [[ ! -f "${EVAL_JSON}" ]]; then
   exit 1
 fi
 
-echo "[4/7] Downloading the official SAM-H comparison checkpoint"
+echo "[4/7] Resolving the official SAM-H comparison checkpoint: ${SAM_PATH}"
 SAM_BYTES="$(stat -c '%s' "${SAM_PATH}" 2>/dev/null || echo 0)"
 if (( SAM_BYTES < 2000000000 )); then
   rm -f "${SAM_PATH}"
