@@ -294,7 +294,8 @@ def main() -> int:
     report_path = args.output_dir / "export_refinement_dumps_summary.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
-    if report["num_exported"] == 0:
+    completed = report["num_exported"] + report["num_skipped"]
+    if completed == 0:
         print("")
         print("No refinement dumps were exported.")
         print("Most likely STAMP Phase-2 export still needs a small compatibility fix.")
@@ -306,7 +307,9 @@ def main() -> int:
         print("  $ROOT/outputs/refine_stamp_phase2_inspection/GenerativeSegmenter_source.py.txt")
         print("  $ROOT/outputs/refine_stamp_phase2_inspection/generate_with_segmentation_source.py.txt")
         print("  $ROOT/outputs/refine_stamp_phase2_inspection/stamp_refinement_inspection.json")
-    return 0 if report["num_exported"] > 0 else 1
+    if report["num_exported"] == 0 and report["num_skipped"] > 0:
+        print(f"All {report['num_skipped']} existing dumps were reused.")
+    return 0 if completed > 0 else 1
 
 
 if __name__ == "__main__":

@@ -22,6 +22,14 @@ export HF_HOME="${HF_HOME:-${ROOT}/.cache/huggingface}"
 export TOKENIZERS_PARALLELISM=false
 mkdir -p "${ROOT}/code" "${ROOT}/models" "${ROOT}/outputs" "${HF_HOME}" "$(dirname "${SAM_PATH}")"
 
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"${ROOT}/outputs/.text4seg_training_free_refcocog_val.lock"
+  if ! flock -n 9; then
+    echo "Another Text4Seg training-free val job already holds the lock." >&2
+    exit 0
+  fi
+fi
+
 echo "[1/7] Fetching official Text4Seg code"
 if [[ ! -d "${TEXT4SEG_DIR}/.git" ]]; then
   GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 --filter=blob:none \
@@ -75,6 +83,11 @@ PYTHONPATH="${REPO}:${PYTHONPATH:-}" conda run --no-capture-output -n "${CONDA_E
   python -m unittest tests.test_training_free_refine
 
 echo "[6/7] Running/resuming Text4Seg on the paired evaluation JSON"
+TEXT4SEG_COMPLETED=0
+if [[ -d "${RESULTS_ROOT}/gt_masks" ]]; then
+  TEXT4SEG_COMPLETED="$(find "${RESULTS_ROOT}/gt_masks" -maxdepth 1 -type f -name '*.png' | wc -l)"
+fi
+echo "Existing complete Text4Seg samples: ${TEXT4SEG_COMPLETED} / 4896"
 cd "${REPO}"
 CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" PYTHONPATH="${REPO}:${PYTHONPATH:-}" \
   conda run --no-capture-output -n "${CONDA_ENV}" \

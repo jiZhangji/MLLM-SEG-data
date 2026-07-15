@@ -46,6 +46,20 @@ bash run_training_free_refine_full_eval.sh
 The combined report is written to
 `../outputs/training_free_refine_refcocog_full_comparison/combined_summary.md`.
 
+For the released STAMP-7B LoRA checkpoint, the resumable full val/test runner
+uses separate 7B dump and result directories:
+
+```bash
+bash run_training_free_stamp7b_full_eval.sh
+```
+
+Both Text4Seg and STAMP-7B exporters reuse completed per-sample files. Inspect
+their exact counts and active processes with:
+
+```bash
+bash check_training_free_eval_status.sh
+```
+
 ## Text4Seg integration
 
 The shared graph core also accepts full-image probabilities and hard masks.
