@@ -73,9 +73,10 @@ preserves the parent OnePass output exactly. `--init-onepass-checkpoint` loads a
 completed parent model while resetting epochs, optimizer, and LR scheduling;
 this differs from `--resume`, which strictly continues an interrupted run.
 
-`run_onepass7b_seg_grounding_2gpu.sh` first checks both visible GPUs, available
-memory, a CUDA allocation, and a two-rank NCCL all-reduce. It starts full DDP
-fine-tuning only after every check passes.
+`run_onepass7b_seg_grounding_2gpu.sh` polls both visible GPUs every 10 seconds
+until they simultaneously meet the free-memory threshold. It then validates a
+CUDA allocation and a two-rank NCCL all-reduce, retrying if resources change,
+and starts full DDP fine-tuning only after every check passes.
 
 ## Training and inference
 

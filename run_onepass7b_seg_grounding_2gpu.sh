@@ -12,18 +12,72 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 PARENT_CHECKPOINT="${PARENT_CHECKPOINT:-${PROJECT_ROOT}/outputs/onepass7b_stamp_lora_warmstart_e2/onepass_qwen7b.pt}"
 OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_ROOT}/outputs/onepass7b_stamp_lora_seg_grounding_e2}"
 MIN_FREE_GPU_GB="${MIN_FREE_GPU_GB:-100}"
+GPU_POLL_SECONDS="${GPU_POLL_SECONDS:-10}"
 
 if [[ ! -f "${PARENT_CHECKPOINT}" ]]; then
   echo "Parent OnePass checkpoint not found: ${PARENT_CHECKPOINT}" >&2
   exit 1
 fi
 
-echo "=== Two-GPU preflight ==="
-echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
-python -m torch.distributed.run --standalone --nproc_per_node=2 \
-  -m onepass_qwen7b.gpu_preflight \
-  --min-free-gb "${MIN_FREE_GPU_GB}" \
-  --probe-mb 256
+IFS=',' read -r -a GPU_IDS <<< "${CUDA_VISIBLE_DEVICES}"
+if [[ "${#GPU_IDS[@]}" -ne 2 ]]; then
+  echo "Exactly two GPU ids are required; got CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}" >&2
+  exit 1
+fi
+
+wait_for_two_gpus() {
+  while true; do
+    local all_ready=1
+    local status=()
+    local gpu line free_mb total_mb utilization free_gb total_gb ready
+    for gpu in "${GPU_IDS[@]}"; do
+      gpu="$(echo "${gpu}" | xargs)"
+      line="$(
+        nvidia-smi --id="${gpu}" \
+          --query-gpu=memory.free,memory.total,utilization.gpu \
+          --format=csv,noheader,nounits 2>/dev/null || true
+      )"
+      if [[ -z "${line}" ]]; then
+        all_ready=0
+        status+=("GPU${gpu}=unavailable")
+        continue
+      fi
+      IFS=',' read -r free_mb total_mb utilization <<< "${line}"
+      free_mb="$(echo "${free_mb}" | xargs)"
+      total_mb="$(echo "${total_mb}" | xargs)"
+      utilization="$(echo "${utilization}" | xargs)"
+      free_gb="$(awk -v value="${free_mb}" 'BEGIN {printf "%.1f", value / 1024}')"
+      total_gb="$(awk -v value="${total_mb}" 'BEGIN {printf "%.1f", value / 1024}')"
+      ready="$(awk -v value="${free_mb}" -v minimum="${MIN_FREE_GPU_GB}" \
+        'BEGIN {print (value / 1024 >= minimum) ? 1 : 0}')"
+      if [[ "${ready}" -ne 1 ]]; then
+        all_ready=0
+      fi
+      status+=("GPU${gpu}:free=${free_gb}/${total_gb}GB,util=${utilization}%")
+    done
+    echo "[$(date '+%F %T')] waiting for both GPUs: ${status[*]} required_free=${MIN_FREE_GPU_GB}GB"
+    if [[ "${all_ready}" -eq 1 ]]; then
+      return 0
+    fi
+    sleep "${GPU_POLL_SECONDS}"
+  done
+}
+
+echo "=== Waiting for two GPUs ==="
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} poll=${GPU_POLL_SECONDS}s"
+while true; do
+  wait_for_two_gpus
+  echo "Both GPUs meet the memory threshold; validating CUDA allocation and NCCL..."
+  if python -m torch.distributed.run --standalone --nproc_per_node=2 \
+    -m onepass_qwen7b.gpu_preflight \
+    --min-free-gb "${MIN_FREE_GPU_GB}" \
+    --probe-mb 256; then
+    echo "Two-GPU preflight passed. Starting training."
+    break
+  fi
+  echo "GPU/NCCL preflight failed or resources changed; retrying in ${GPU_POLL_SECONDS}s."
+  sleep "${GPU_POLL_SECONDS}"
+done
 
 echo "=== SEG-grounding fine-tuning ==="
 echo "parent=${PARENT_CHECKPOINT}"
