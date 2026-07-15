@@ -70,3 +70,6 @@ bash run_text4seg_training_free_eval.sh
 
 It defaults to complete RefCOCOg val(U). Set `TEXT4SEG_EVAL_JSON`, result paths,
 and optionally `TEXT4SEG_EVAL_LIMIT` when starting a smoke or test(U) run.
+The released Text4Seg checkpoint records the author's relative CLIP path; the
+runner maps it to the equivalent Hugging Face identifier
+`openai/clip-vit-large-patch14-336` before model construction.

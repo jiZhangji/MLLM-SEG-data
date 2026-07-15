@@ -6,6 +6,7 @@ REPO="${ROOT}/MLLM-SEG-data"
 TEXT4SEG_DIR="${TEXT4SEG_DIR:-${ROOT}/code/Text4Seg}"
 CONDA_ENV="${TEXT4SEG_CONDA_ENV:-text4seg-tf}"
 MODEL_PATH="${TEXT4SEG_MODEL_PATH:-lmc22/text4seg-llava-7b-p24}"
+VISION_TOWER="${TEXT4SEG_VISION_TOWER:-openai/clip-vit-large-patch14-336}"
 EVAL_JSON="${TEXT4SEG_EVAL_JSON:-${ROOT}/code/STAMP/playground/data/json_eval_baseline/refcocog_val.json}"
 EVAL_LIMIT="${TEXT4SEG_EVAL_LIMIT:-0}"
 CUDA_DEVICE="${CUDA_DEVICE:-0}"
@@ -80,6 +81,7 @@ CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" PYTHONPATH="${REPO}:${PYTHONPATH:-}" \
   python -m training_free_refine.export_text4seg_masks \
     --text4seg-code-dir "${TEXT4SEG_DIR}" \
     --model-path "${MODEL_PATH}" \
+    --vision-tower "${VISION_TOWER}" \
     --eval-json "${EVAL_JSON}" \
     --data-root "${ROOT}" \
     --sam-path "${SAM_PATH}" \

@@ -20,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Text4Seg on the same flat JSON used by STAMP evaluation.")
     parser.add_argument("--text4seg-code-dir", type=Path, required=True)
     parser.add_argument("--model-path", required=True)
+    parser.add_argument("--vision-tower", default="openai/clip-vit-large-patch14-336")
     parser.add_argument("--eval-json", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--sam-path", type=Path, required=True)
@@ -123,6 +124,7 @@ def main() -> int:
         tokenizer_image_token,
     )
     from llava.model.builder import load_pretrained_model  # type: ignore[import-not-found]
+    from llava.model.language_model.llava_llama import LlavaConfig  # type: ignore[import-not-found]
     from llava.model.segment_anything import SamPredictor, sam_model_registry  # type: ignore[import-not-found]
     from llava.model.segment_anything.utils.transforms import ResizeLongestSide  # type: ignore[import-not-found]
     from llava.utils import disable_torch_init  # type: ignore[import-not-found]
@@ -132,7 +134,19 @@ def main() -> int:
     torch.manual_seed(args.seed)
     disable_torch_init()
     model_name = get_model_name_from_path(args.model_path)
-    tokenizer, model, image_processor, _ = load_pretrained_model(args.model_path, None, model_name)
+    model_config = LlavaConfig.from_pretrained(args.model_path)
+    checkpoint_vision_tower = getattr(model_config, "mm_vision_tower", None)
+    model_config.mm_vision_tower = args.vision_tower
+    print(
+        f"Text4Seg vision tower: {checkpoint_vision_tower!r} -> {args.vision_tower!r}",
+        flush=True,
+    )
+    tokenizer, model, image_processor, _ = load_pretrained_model(
+        args.model_path,
+        None,
+        model_name,
+        config=model_config,
+    )
     sam = sam_model_registry["vit_h"](checkpoint=str(args.sam_path))
     sam = sam.to(dtype=torch.float32, device="cuda")
     predictor = SamPredictor(sam)
