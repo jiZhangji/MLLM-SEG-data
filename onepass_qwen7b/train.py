@@ -18,7 +18,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, DistributedSampler, Sampler
 from tqdm import tqdm
 
-from .checkpoint import load_checkpoint, save_checkpoint
+from .checkpoint import load_checkpoint, read_checkpoint_config, save_checkpoint
 from .data import OnePass7BDataset, collate_samples, grid_targets, prepare_batch
 from .model import segmentation_loss
 from .runtime import configure_cudnn, load_base_onepass_model
@@ -33,6 +33,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument(
+        "--init-onepass-checkpoint",
+        type=Path,
+        help="Warm-start model weights from a completed OnePass checkpoint and reset training state.",
+    )
     parser.add_argument(
         "--stamp-adapter",
         type=Path,
@@ -53,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--query-learning-rate", type=float, default=1e-4)
     parser.add_argument("--head-learning-rate", type=float, default=1e-4)
     parser.add_argument("--lora-learning-rate", type=float, default=2e-5)
+    parser.add_argument("--seg-learning-rate", type=float, default=3e-5)
     parser.add_argument("--use-lora", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--lora-rank", type=int, default=16)
     parser.add_argument("--lora-alpha", type=float, default=32.0)
@@ -65,6 +71,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-grid-width", type=int, default=512)
     parser.add_argument("--bce-weight", type=float, default=0.3)
     parser.add_argument("--dice-weight", type=float, default=0.7)
+    parser.add_argument("--use-seg-grounding", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--seg-grounding-size", type=int, default=256)
+    parser.add_argument("--seg-grounding-temperature", type=float, default=0.1)
+    parser.add_argument("--seg-grounding-loss-weight", type=float, default=0.1)
+    parser.add_argument("--use-seg-fusion", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
@@ -123,7 +134,12 @@ def linear_schedule(total_steps: int, warmup_ratio: float):
 
 
 def checkpoint_config(args: argparse.Namespace) -> dict[str, Any]:
-    initialization = "stamp_7b_lora_warm_start" if args.stamp_adapter else "base_qwen2_vl_without_stamp_weights"
+    if args.init_onepass_checkpoint:
+        initialization = "onepass_checkpoint_seg_grounding_finetune"
+    elif args.stamp_adapter:
+        initialization = "stamp_7b_lora_warm_start"
+    else:
+        initialization = "base_qwen2_vl_without_stamp_weights"
     return {
         "base_model": str(args.base_model),
         "stamp_code_dir": str(args.stamp_code_dir),
@@ -143,7 +159,15 @@ def checkpoint_config(args: argparse.Namespace) -> dict[str, Any]:
         "train_classifier": bool(args.train_classifier),
         "bce_weight": float(args.bce_weight),
         "dice_weight": float(args.dice_weight),
+        "use_seg_grounding": bool(args.use_seg_grounding),
+        "seg_grounding_size": int(args.seg_grounding_size),
+        "seg_grounding_temperature": float(args.seg_grounding_temperature),
+        "seg_grounding_loss_weight": float(args.seg_grounding_loss_weight),
+        "use_seg_fusion": bool(args.use_seg_fusion),
         "initialization": initialization,
+        "parent_onepass_checkpoint": (
+            str(args.init_onepass_checkpoint.resolve()) if args.init_onepass_checkpoint else None
+        ),
         "stamp_adapter": str(args.stamp_adapter.resolve()) if args.stamp_adapter else None,
         "stamp_init_classifier": bool(args.stamp_adapter and args.stamp_init_classifier),
         "prompt_mode": "strict_query",
@@ -163,8 +187,27 @@ def main() -> int:
         raise ValueError("warmup-ratio must be in [0, 1).")
     if args.bce_weight < 0 or args.dice_weight < 0 or args.bce_weight + args.dice_weight <= 0:
         raise ValueError("Loss weights must be non-negative and not both zero.")
+    if args.resume is not None and args.init_onepass_checkpoint is not None:
+        raise ValueError("--resume and --init-onepass-checkpoint are mutually exclusive.")
+    if args.stamp_adapter is not None and args.init_onepass_checkpoint is not None:
+        raise ValueError("Use either --stamp-adapter or --init-onepass-checkpoint, not both.")
+    if args.use_seg_grounding:
+        if args.seg_grounding_loss_weight <= 0:
+            raise ValueError("SEG grounding requires a positive --seg-grounding-loss-weight.")
+        if args.seg_grounding_size <= 0 or args.seg_grounding_temperature <= 0:
+            raise ValueError("SEG grounding size and temperature must be positive.")
     if not args.train_classifier:
         raise ValueError("The OnePass mask classifier must remain trainable.")
+    parent_config = None
+    if args.init_onepass_checkpoint is not None:
+        parent_config = read_checkpoint_config(args.init_onepass_checkpoint)
+        args.use_lora = bool(parent_config.get("use_lora", args.use_lora))
+        args.lora_rank = int(parent_config.get("lora_rank", args.lora_rank))
+        args.lora_alpha = float(parent_config.get("lora_alpha", args.lora_alpha))
+        args.lora_dropout = float(parent_config.get("lora_dropout", args.lora_dropout))
+        args.use_rslora = bool(parent_config.get("use_rslora", args.use_rslora))
+        args.max_grid_height = int(parent_config.get("max_grid_height", args.max_grid_height))
+        args.max_grid_width = int(parent_config.get("max_grid_width", args.max_grid_width))
     adapter_config = None
     if args.stamp_adapter is not None:
         if not args.use_lora:
@@ -226,6 +269,10 @@ def main() -> int:
         train_visual_projection=args.train_visual_projection,
         train_position_embeddings=args.train_position_embeddings,
         train_classifier=args.train_classifier,
+        use_seg_grounding=args.use_seg_grounding,
+        seg_grounding_size=args.seg_grounding_size,
+        seg_grounding_temperature=args.seg_grounding_temperature,
+        use_seg_fusion=args.use_seg_fusion,
         allow_existing_segmentation_tokens=args.allow_existing_segmentation_tokens,
         gradient_checkpointing=args.gradient_checkpointing,
     )
@@ -237,6 +284,19 @@ def main() -> int:
             args.stamp_adapter,
             initialize_classifier=args.stamp_init_classifier,
         )
+    parent_checkpoint_report = None
+    if args.init_onepass_checkpoint is not None:
+        parent_checkpoint = load_checkpoint(
+            raw_model,
+            args.init_onepass_checkpoint,
+            allow_missing_seg_grounding=True,
+        )
+        parent_checkpoint_report = {
+            "path": str(args.init_onepass_checkpoint.resolve()),
+            "epoch": int(parent_checkpoint.get("epoch", 0)),
+            "global_step": int(parent_checkpoint.get("global_step", 0)),
+            "seg_grounding_initialized_fresh": "seg_grounding_state_dict" not in parent_checkpoint,
+        }
     query_parameters = [parameter for parameter in raw_model.query_builder.parameters() if parameter.requires_grad]
     parameter_groups = [{"params": query_parameters, "lr": args.query_learning_rate, "name": "queries"}]
     head_parameters = [parameter for parameter in raw_model.mask_classifier.parameters() if parameter.requires_grad]
@@ -247,6 +307,11 @@ def main() -> int:
         if not lora_parameters:
             raise RuntimeError("LoRA was requested but no LoRA parameters were injected.")
         parameter_groups.append({"params": lora_parameters, "lr": args.lora_learning_rate, "name": "lora"})
+    seg_parameters = raw_model.seg_grounding_parameters()
+    if args.use_seg_grounding:
+        if not seg_parameters:
+            raise RuntimeError("SEG grounding was requested but has no trainable parameters.")
+        parameter_groups.append({"params": seg_parameters, "lr": args.seg_learning_rate, "name": "seg"})
     optimizer = AdamW(parameter_groups, weight_decay=args.weight_decay)
     updates_per_epoch = math.ceil(len(loader) / args.gradient_accumulation)
     total_steps = updates_per_epoch * args.epochs
@@ -277,11 +342,13 @@ def main() -> int:
         "query_learning_rate": args.query_learning_rate,
         "head_learning_rate": args.head_learning_rate,
         "lora_learning_rate": args.lora_learning_rate,
+        "seg_learning_rate": args.seg_learning_rate if args.use_seg_grounding else None,
         "trainable_parameters": trainable,
         "total_parameters": total,
         "total_optimizer_steps": total_steps,
         "cudnn_disabled": cudnn_disabled,
         "stamp_adapter_initialization": adapter_report,
+        "parent_checkpoint_initialization": parent_checkpoint_report,
     }
     if is_main:
         trainable_rows = [
@@ -315,7 +382,22 @@ def main() -> int:
             dynamic_ncols=True,
             disable=not is_main,
         )
-        running = {"loss": 0.0, "loss_bce": 0.0, "loss_dice": 0.0, "count": 0}
+        metric_names = (
+            (
+                "loss",
+                "loss_mask",
+                "loss_mask_bce",
+                "loss_mask_dice",
+                "loss_seg",
+                "loss_seg_bce",
+                "loss_seg_dice",
+                "seg_fusion_alpha",
+            )
+            if args.use_seg_grounding
+            else ("loss", "loss_bce", "loss_dice")
+        )
+        running = {name: 0.0 for name in metric_names}
+        running["count"] = 0
         for batch_index, samples in enumerate(iterator):
             if epoch == start_epoch and batch_index < start_batch:
                 continue
@@ -339,12 +421,35 @@ def main() -> int:
                         pixel_values=prepared["pixel_values"],
                         image_grid_thw=prepared["image_grid_thw"],
                     )
-                    loss, parts = segmentation_loss(
+                    mask_loss, mask_parts = segmentation_loss(
                         outputs.mask_logits,
                         targets,
                         bce_weight=args.bce_weight,
                         dice_weight=args.dice_weight,
                     )
+                    if args.use_seg_grounding:
+                        if outputs.seg_logits is None:
+                            raise RuntimeError("SEG grounding output is missing.")
+                        seg_loss, seg_parts = segmentation_loss(
+                            outputs.seg_logits,
+                            targets,
+                            bce_weight=args.bce_weight,
+                            dice_weight=args.dice_weight,
+                        )
+                        loss = mask_loss + args.seg_grounding_loss_weight * seg_loss
+                        parts = {
+                            "loss": float(loss.detach().item()),
+                            "loss_mask": mask_parts["loss"],
+                            "loss_mask_bce": mask_parts["loss_bce"],
+                            "loss_mask_dice": mask_parts["loss_dice"],
+                            "loss_seg": seg_parts["loss"],
+                            "loss_seg_bce": seg_parts["loss_bce"],
+                            "loss_seg_dice": seg_parts["loss_dice"],
+                            "seg_fusion_alpha": raw_model.seg_fusion_alpha(),
+                        }
+                    else:
+                        loss = mask_loss
+                        parts = mask_parts
                     scaled_loss = loss / args.gradient_accumulation
                 if is_main and epoch == start_epoch and batch_index == start_batch:
                     print(
@@ -355,6 +460,11 @@ def main() -> int:
                                 "first_batch_image_grid_thw": prepared["image_grid_thw"].detach().cpu().tolist(),
                                 "first_batch_grid_shapes": prepared["grid_shapes"],
                                 "first_batch_mask_logit_shapes": [list(value.shape) for value in outputs.mask_logits],
+                                "first_batch_seg_logit_shapes": (
+                                    [list(value.shape) for value in outputs.seg_logits]
+                                    if outputs.seg_logits is not None
+                                    else None
+                                ),
                                 "first_batch_target_shapes": [list(value.shape) for value in targets],
                             },
                             ensure_ascii=True,
@@ -362,7 +472,7 @@ def main() -> int:
                         flush=True,
                     )
                 scaled_loss.backward()
-            for key in ("loss", "loss_bce", "loss_dice"):
+            for key in metric_names:
                 running[key] += parts[key]
             running["count"] += 1
 
@@ -378,9 +488,7 @@ def main() -> int:
                         "epoch": epoch + 1,
                         "batch": batch_index + 1,
                         "global_step": global_step,
-                        "loss": running["loss"] / count,
-                        "loss_bce": running["loss_bce"] / count,
-                        "loss_dice": running["loss_dice"] / count,
+                        **{name: running[name] / count for name in metric_names},
                         "learning_rates": {
                             group["name"]: group["lr"] for group in optimizer.param_groups
                         },
@@ -388,7 +496,8 @@ def main() -> int:
                     append_jsonl(history_path, row)
                     print(json.dumps({"train": row}, ensure_ascii=True), flush=True)
                     iterator.set_postfix(loss=f"{row['loss']:.4f}", step=global_step)
-                    running = {"loss": 0.0, "loss_bce": 0.0, "loss_dice": 0.0, "count": 0}
+                    running = {name: 0.0 for name in metric_names}
+                    running["count"] = 0
                 if is_main and args.save_steps > 0 and global_step % args.save_steps == 0:
                     save_checkpoint(
                         raw_model,

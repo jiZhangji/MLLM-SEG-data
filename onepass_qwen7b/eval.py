@@ -50,6 +50,24 @@ def intersection_union(prediction: torch.Tensor, target: torch.Tensor) -> tuple[
     return int((prediction & target).sum().item()), int((prediction | target).sum().item())
 
 
+def logits_metrics(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    grid_shape: tuple[int, int],
+    threshold: float,
+) -> tuple[float, int, int]:
+    probability = torch.sigmoid(logits.float()).reshape(1, 1, *grid_shape)
+    probability = F.interpolate(
+        probability,
+        size=tuple(int(value) for value in target.shape),
+        mode="bilinear",
+        align_corners=False,
+    ).squeeze()
+    prediction = probability >= threshold
+    intersection, union = intersection_union(prediction, target)
+    return intersection / max(union, 1), intersection, union
+
+
 def main() -> int:
     args = parse_args()
     if not 0.0 < args.threshold < 1.0:
@@ -92,6 +110,10 @@ def main() -> int:
         train_visual_projection=bool(config.get("train_visual_projection", True)),
         train_position_embeddings=bool(config.get("train_position_embeddings", True)),
         train_classifier=bool(config.get("train_classifier", True)),
+        use_seg_grounding=bool(config.get("use_seg_grounding", False)),
+        seg_grounding_size=int(config.get("seg_grounding_size", 256)),
+        seg_grounding_temperature=float(config.get("seg_grounding_temperature", 0.1)),
+        use_seg_fusion=bool(config.get("use_seg_fusion", True)),
         allow_existing_segmentation_tokens=args.allow_existing_segmentation_tokens,
         gradient_checkpointing=False,
     )
@@ -101,6 +123,10 @@ def main() -> int:
     rows = []
     total_intersection = 0
     total_union = 0
+    raw_total_intersection = 0
+    raw_total_union = 0
+    seg_total_intersection = 0
+    seg_total_union = 0
     model_seconds = 0.0
     end_to_end_seconds = 0.0
     autocast_enabled = device.type == "cuda" and dtype != "fp32"
@@ -122,30 +148,48 @@ def main() -> int:
                 )
             synchronize(device)
             model_seconds += time.perf_counter() - model_start
-            for sample, logits, grid_shape in zip(samples, outputs.mask_logits, outputs.grid_shapes):
+            seg_groups = outputs.seg_logits or [None] * len(outputs.mask_logits)
+            for sample, logits, raw_logits, seg_logits, grid_shape in zip(
+                samples,
+                outputs.mask_logits,
+                outputs.raw_mask_logits,
+                seg_groups,
+                outputs.grid_shapes,
+            ):
                 target = sample.mask.to(device=device, dtype=torch.bool)
-                probability = torch.sigmoid(logits.float()).reshape(1, 1, *grid_shape)
-                probability = F.interpolate(
-                    probability,
-                    size=tuple(int(value) for value in target.shape),
-                    mode="bilinear",
-                    align_corners=False,
-                ).squeeze()
-                prediction = probability >= args.threshold
-                intersection, union = intersection_union(prediction, target)
-                iou = intersection / max(union, 1)
+                iou, intersection, union = logits_metrics(logits, target, grid_shape, args.threshold)
+                raw_iou, raw_intersection, raw_union = logits_metrics(
+                    raw_logits, target, grid_shape, args.threshold
+                )
                 total_intersection += intersection
                 total_union += union
-                rows.append(
-                    {
-                        "name": sample.record.name,
-                        "index": sample.record.index,
-                        "image_path": str(sample.record.image_path),
-                        "iou": iou,
-                        "intersection": intersection,
-                        "union": union,
-                    }
-                )
+                raw_total_intersection += raw_intersection
+                raw_total_union += raw_union
+                row = {
+                    "name": sample.record.name,
+                    "index": sample.record.index,
+                    "image_path": str(sample.record.image_path),
+                    "iou": iou,
+                    "intersection": intersection,
+                    "union": union,
+                    "raw_iou": raw_iou,
+                    "raw_intersection": raw_intersection,
+                    "raw_union": raw_union,
+                }
+                if seg_logits is not None:
+                    seg_iou, seg_intersection, seg_union = logits_metrics(
+                        seg_logits, target, grid_shape, args.threshold
+                    )
+                    seg_total_intersection += seg_intersection
+                    seg_total_union += seg_union
+                    row.update(
+                        {
+                            "seg_iou": seg_iou,
+                            "seg_intersection": seg_intersection,
+                            "seg_union": seg_union,
+                        }
+                    )
+                rows.append(row)
             synchronize(device)
             end_to_end_seconds += time.perf_counter() - end_start
 
@@ -156,6 +200,7 @@ def main() -> int:
         writer.writerows(rows)
     mean_iou = sum(row["iou"] for row in rows) / max(len(rows), 1)
     ciou = total_intersection / max(total_union, 1)
+    raw_mean_iou = sum(row["raw_iou"] for row in rows) / max(len(rows), 1)
     summary = {
         "samples": len(rows),
         "mean_iou": mean_iou,
@@ -163,14 +208,29 @@ def main() -> int:
         "cIoU": ciou,
         "total_intersection": total_intersection,
         "total_union": total_union,
+        "raw_mean_iou": raw_mean_iou,
+        "raw_gIoU": raw_mean_iou,
+        "raw_cIoU": raw_total_intersection / max(raw_total_union, 1),
         "model_seconds_per_sample": model_seconds / max(len(rows), 1),
         "end_to_end_seconds_per_sample": end_to_end_seconds / max(len(rows), 1),
         "model_calls": len(loader),
         "autoregressive_generate_calls": 0,
         "initialization": str(config.get("initialization", "base_qwen2_vl_without_stamp_weights")),
+        "use_seg_grounding": bool(config.get("use_seg_grounding", False)),
+        "seg_grounding_loss_weight": float(config.get("seg_grounding_loss_weight", 0.0)),
+        "seg_fusion_alpha": model.seg_fusion_alpha(),
         "prompt_mode": "strict_query",
         "rows_csv": str(rows_path),
     }
+    if bool(config.get("use_seg_grounding", False)):
+        seg_mean_iou = sum(row["seg_iou"] for row in rows) / max(len(rows), 1)
+        summary.update(
+            {
+                "seg_mean_iou": seg_mean_iou,
+                "seg_gIoU": seg_mean_iou,
+                "seg_cIoU": seg_total_intersection / max(seg_total_union, 1),
+            }
+        )
     (args.output_dir / "eval_summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=True), encoding="utf-8"
     )

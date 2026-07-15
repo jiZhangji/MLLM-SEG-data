@@ -147,6 +147,34 @@ class OnePassQwen7BTests(unittest.TestCase):
         self.assertIsNotNone(model.mask_classifier.weight.grad)
         self.assertTrue(torch.equal(backbone.model.last_seg_mask, input_ids.eq(6)))
 
+    def test_seg_grounding_starts_as_output_preserving_and_receives_gradients(self):
+        backbone = FakeBackbone()
+        inject_lora(backbone.model, rank=2, alpha=4.0, dropout=0.0, target_names=("q_proj",))
+        model = OnePassQwen7B(
+            backbone,
+            seg_token_id=5,
+            mask_token_id=6,
+            merge_size=2,
+            use_seg_grounding=True,
+            seg_grounding_size=2,
+        )
+        output = model(
+            input_ids=torch.tensor([[7, 7, 5, 6, 6]]),
+            attention_mask=torch.ones(1, 5, dtype=torch.long),
+            pixel_values=torch.zeros(8, 3),
+            image_grid_thw=torch.tensor([[1, 2, 4]]),
+        )
+        self.assertIsNotNone(output.seg_logits)
+        self.assertTrue(torch.allclose(output.mask_logits[0], output.raw_mask_logits[0]))
+        targets = [torch.tensor([1.0, 0.0])]
+        mask_loss, _ = segmentation_loss(output.mask_logits, targets)
+        seg_loss, _ = segmentation_loss(output.seg_logits, targets)
+        (mask_loss + 0.1 * seg_loss).backward()
+        self.assertIsNotNone(model.seg_grounding_head.seg_projection.weight.grad)
+        self.assertIsNotNone(model.seg_grounding_head.mask_projection.weight.grad)
+        self.assertIsNotNone(model.seg_grounding_head.fusion_weight.grad)
+        self.assertIsNotNone(model.query_builder.seg_embedding.grad)
+
     def test_checkpoint_round_trip(self):
         backbone = FakeBackbone()
         inject_lora(backbone.model, rank=2, alpha=4.0, dropout=0.0, target_names=("q_proj",))
@@ -172,8 +200,66 @@ class OnePassQwen7BTests(unittest.TestCase):
             self.assertTrue(torch.allclose(restored.query_builder.seg_embedding, model.query_builder.seg_embedding))
             self.assertTrue(torch.allclose(restored.mask_classifier.bias, model.mask_classifier.bias))
             self.assertTrue(torch.allclose(restored.lora_parameters()[0], model.lora_parameters()[0]))
+            grounding_backbone = FakeBackbone()
+            inject_lora(
+                grounding_backbone.model,
+                rank=2,
+                alpha=4.0,
+                dropout=0.0,
+                target_names=("q_proj",),
+            )
+            grounding_model = OnePassQwen7B(
+                grounding_backbone,
+                seg_token_id=5,
+                mask_token_id=6,
+                merge_size=2,
+                use_seg_grounding=True,
+                seg_grounding_size=2,
+            )
+            load_checkpoint(grounding_model, path, allow_missing_seg_grounding=True)
+
+    def test_seg_grounding_checkpoint_round_trip(self):
+        backbone = FakeBackbone()
+        inject_lora(backbone.model, rank=2, alpha=4.0, dropout=0.0, target_names=("q_proj",))
+        model = OnePassQwen7B(
+            backbone,
+            seg_token_id=5,
+            mask_token_id=6,
+            merge_size=2,
+            use_seg_grounding=True,
+            seg_grounding_size=2,
+        )
+        with torch.no_grad():
+            model.seg_grounding_head.fusion_weight.fill_(0.3)
+            model.seg_grounding_head.seg_projection.weight.fill_(0.2)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = save_checkpoint(
+                model,
+                Path(temporary) / "model.pt",
+                config={"use_seg_grounding": True},
+                epoch=1,
+                batch_in_epoch=0,
+                global_step=2,
+            )
+            restored_backbone = FakeBackbone()
+            inject_lora(restored_backbone.model, rank=2, alpha=4.0, dropout=0.0, target_names=("q_proj",))
+            restored = OnePassQwen7B(
+                restored_backbone,
+                seg_token_id=5,
+                mask_token_id=6,
+                merge_size=2,
+                use_seg_grounding=True,
+                seg_grounding_size=2,
+            )
+            load_checkpoint(restored, path)
+            self.assertTrue(
+                torch.allclose(
+                    restored.seg_grounding_head.seg_projection.weight,
+                    model.seg_grounding_head.seg_projection.weight,
+                )
+            )
+            self.assertAlmostEqual(restored.seg_fusion_alpha(), model.seg_fusion_alpha(), places=6)
 
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -56,6 +56,27 @@ LoRA tensors. Saved OnePass checkpoints contain the complete trained LoRA,
 query, and classifier state, so evaluation does not need to reload the source
 STAMP adapter.
 
+## Optional SEG grounding fine-tuning
+
+`--use-seg-grounding` adds a small side head without replacing the existing
+mask classifier. It projects the contextual SEG state and every spatial MASK
+state into a shared space and supervises their similarity with the token-grid
+ground-truth mask. Training uses:
+
+```text
+L = L_mask + lambda_seg * L_seg
+final_logits = raw_classifier_logits + tanh(alpha) * seg_logits
+```
+
+The fusion parameter `alpha` starts at zero, so enabling this branch initially
+preserves the parent OnePass output exactly. `--init-onepass-checkpoint` loads a
+completed parent model while resetting epochs, optimizer, and LR scheduling;
+this differs from `--resume`, which strictly continues an interrupted run.
+
+`run_onepass7b_seg_grounding_2gpu.sh` first checks both visible GPUs, available
+memory, a CUDA allocation, and a two-rank NCCL all-reduce. It starts full DDP
+fine-tuning only after every check passes.
+
 ## Training and inference
 
 Training uses weighted BCE plus Dice and supports DDP, gradient accumulation,

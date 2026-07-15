@@ -36,6 +36,8 @@ def save_checkpoint(
         "batch_in_epoch": int(batch_in_epoch),
         "global_step": int(global_step),
     }
+    if model.seg_grounding_head is not None:
+        payload["seg_grounding_state_dict"] = model.seg_grounding_head.state_dict()
     if optimizer is not None:
         payload["optimizer_state_dict"] = optimizer.state_dict()
     if scheduler is not None:
@@ -52,6 +54,7 @@ def load_checkpoint(
     *,
     optimizer: torch.optim.Optimizer | None = None,
     scheduler: Any = None,
+    allow_missing_seg_grounding: bool = False,
 ) -> dict[str, Any]:
     checkpoint = torch.load(Path(path), map_location="cpu", weights_only=False)
     if int(checkpoint.get("format_version", 0)) != FORMAT_VERSION:
@@ -61,6 +64,15 @@ def load_checkpoint(
     saved_lora = checkpoint.get("lora_state_dict", {})
     if saved_lora or model.lora_parameters():
         load_lora_state_dict(model.backbone, saved_lora)
+    saved_grounding = checkpoint.get("seg_grounding_state_dict")
+    if model.seg_grounding_head is not None:
+        if saved_grounding is None:
+            if not allow_missing_seg_grounding:
+                raise ValueError(f"Checkpoint {path} has no SEG grounding head state.")
+        else:
+            model.seg_grounding_head.load_state_dict(saved_grounding, strict=True)
+    elif saved_grounding is not None:
+        raise ValueError("Checkpoint contains a SEG grounding head, but the model was built without it.")
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     if scheduler is not None and "scheduler_state_dict" in checkpoint:
@@ -71,4 +83,3 @@ def load_checkpoint(
 def read_checkpoint_config(path: str | Path) -> dict[str, Any]:
     checkpoint = torch.load(Path(path), map_location="cpu", weights_only=False)
     return dict(checkpoint.get("config", {}))
-

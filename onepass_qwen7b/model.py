@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,8 +23,59 @@ def hidden_size(config: Any) -> int:
 @dataclass
 class OnePass7BOutput:
     mask_logits: list[torch.Tensor]
+    raw_mask_logits: list[torch.Tensor]
+    seg_logits: list[torch.Tensor] | None
     grid_shapes: list[tuple[int, int]]
     seg_hidden: torch.Tensor
+
+
+class SegGroundingHead(nn.Module):
+    """Ground a contextual SEG representation against spatial MASK states."""
+
+    def __init__(
+        self,
+        hidden_size: int,
+        projection_size: int = 256,
+        temperature: float = 0.1,
+        use_fusion: bool = True,
+    ) -> None:
+        super().__init__()
+        if projection_size <= 0:
+            raise ValueError("SEG grounding projection size must be positive.")
+        if temperature <= 0:
+            raise ValueError("SEG grounding temperature must be positive.")
+        self.seg_projection = nn.Linear(hidden_size, projection_size, bias=False)
+        self.mask_projection = nn.Linear(hidden_size, projection_size, bias=False)
+        self.logit_scale = nn.Parameter(torch.tensor(math.log(1.0 / temperature)))
+        self.fusion_weight = nn.Parameter(torch.zeros(()), requires_grad=bool(use_fusion))
+        self.use_fusion = bool(use_fusion)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.xavier_uniform_(self.seg_projection.weight)
+        nn.init.xavier_uniform_(self.mask_projection.weight)
+
+    def forward(
+        self,
+        seg_hidden: torch.Tensor,
+        mask_hidden: list[torch.Tensor],
+    ) -> list[torch.Tensor]:
+        if seg_hidden.ndim != 2 or seg_hidden.shape[0] != len(mask_hidden):
+            raise ValueError(
+                f"SEG batch {tuple(seg_hidden.shape)} does not match {len(mask_hidden)} MASK groups."
+            )
+        seg_query = F.normalize(self.seg_projection(seg_hidden.float()), dim=-1)
+        scale = self.logit_scale.clamp(max=math.log(100.0)).exp()
+        values = []
+        for query, hidden in zip(seg_query, mask_hidden):
+            mask_keys = F.normalize(self.mask_projection(hidden.float()), dim=-1)
+            values.append(torch.matmul(mask_keys, query) * scale)
+        return values
+
+    def fusion_alpha(self) -> torch.Tensor:
+        if not self.use_fusion:
+            return self.fusion_weight.detach() * 0.0
+        return torch.tanh(self.fusion_weight)
 
 
 class SegMaskQueryBuilder(nn.Module):
@@ -93,6 +145,10 @@ class OnePassQwen7B(nn.Module):
         train_visual_projection: bool = True,
         train_position_embeddings: bool = True,
         train_classifier: bool = True,
+        use_seg_grounding: bool = False,
+        seg_grounding_size: int = 256,
+        seg_grounding_temperature: float = 0.1,
+        use_seg_fusion: bool = True,
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -101,6 +157,16 @@ class OnePassQwen7B(nn.Module):
         self.merge_size = int(merge_size)
         self.query_builder = SegMaskQueryBuilder(
             hidden_size(backbone.config), max_grid_height, max_grid_width
+        )
+        self.seg_grounding_head = (
+            SegGroundingHead(
+                hidden_size(backbone.config),
+                projection_size=seg_grounding_size,
+                temperature=seg_grounding_temperature,
+                use_fusion=use_seg_fusion,
+            )
+            if use_seg_grounding
+            else None
         )
         self.train_visual_projection = bool(train_visual_projection)
         self.train_position_embeddings = bool(train_position_embeddings)
@@ -136,11 +202,23 @@ class OnePassQwen7B(nn.Module):
             if isinstance(module, OnePassLoRALinear):
                 module.train(mode)
         self.query_builder.train(mode)
+        if self.seg_grounding_head is not None:
+            self.seg_grounding_head.train(mode)
         self.mask_classifier.train(mode and self.train_classifier)
         return self
 
     def lora_parameters(self) -> list[nn.Parameter]:
         return lora_parameters(self.backbone)
+
+    def seg_grounding_parameters(self) -> list[nn.Parameter]:
+        if self.seg_grounding_head is None:
+            return []
+        return [parameter for parameter in self.seg_grounding_head.parameters() if parameter.requires_grad]
+
+    def seg_fusion_alpha(self) -> float:
+        if self.seg_grounding_head is None:
+            return 0.0
+        return float(self.seg_grounding_head.fusion_alpha().detach().item())
 
     def trainable_parameters(self) -> list[nn.Parameter]:
         return [parameter for parameter in self.parameters() if parameter.requires_grad]
@@ -222,10 +300,24 @@ class OnePassQwen7B(nn.Module):
             return_dict=True,
         )
         hidden = outputs.last_hidden_state
-        flat_logits = self.mask_classifier(hidden[mask_positions]).squeeze(-1)
-        mask_logits = list(flat_logits.split(expected.tolist()))
+        flat_mask_hidden = hidden[mask_positions]
+        mask_hidden = list(flat_mask_hidden.split(expected.tolist()))
+        flat_logits = self.mask_classifier(flat_mask_hidden).squeeze(-1)
+        raw_mask_logits = list(flat_logits.split(expected.tolist()))
         seg_hidden = hidden[seg_positions].reshape(input_ids.shape[0], -1)
-        return OnePass7BOutput(mask_logits=mask_logits, grid_shapes=grid_shapes, seg_hidden=seg_hidden)
+        seg_logits = None
+        mask_logits = raw_mask_logits
+        if self.seg_grounding_head is not None:
+            seg_logits = self.seg_grounding_head(seg_hidden, mask_hidden)
+            alpha = self.seg_grounding_head.fusion_alpha()
+            mask_logits = [raw + alpha * seg for raw, seg in zip(raw_mask_logits, seg_logits)]
+        return OnePass7BOutput(
+            mask_logits=mask_logits,
+            raw_mask_logits=raw_mask_logits,
+            seg_logits=seg_logits,
+            grid_shapes=grid_shapes,
+            seg_hidden=seg_hidden,
+        )
 
 
 def segmentation_loss(

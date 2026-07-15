@@ -103,6 +103,10 @@ def load_base_onepass_model(
     train_visual_projection: bool = True,
     train_position_embeddings: bool = True,
     train_classifier: bool = True,
+    use_seg_grounding: bool = False,
+    seg_grounding_size: int = 256,
+    seg_grounding_temperature: float = 0.1,
+    use_seg_fusion: bool = True,
     allow_existing_segmentation_tokens: bool = False,
     gradient_checkpointing: bool = False,
 ) -> tuple[OnePassQwen7B, Any]:
@@ -177,6 +181,10 @@ def load_base_onepass_model(
         train_visual_projection=train_visual_projection,
         train_position_embeddings=train_position_embeddings,
         train_classifier=train_classifier,
+        use_seg_grounding=use_seg_grounding,
+        seg_grounding_size=seg_grounding_size,
+        seg_grounding_temperature=seg_grounding_temperature,
+        use_seg_fusion=use_seg_fusion,
     )
     embeddings = backbone.get_input_embeddings().weight.detach()
     seg_vector = semantic_average(tokenizer, embeddings, "segment target", old_vocab_size)
