@@ -26,6 +26,6 @@ echo "STAMP-7B test dumps: $(count_files "${STAMP7B_TEST}" '*.pt') / 9602"
 echo "STAMP-7B final summary: $([[ -f "${STAMP7B_SUMMARY}" ]] && echo yes || echo no)"
 echo
 echo "Active related processes:"
-if ! pgrep -af 'training_free_refine.export_text4seg_masks|export_stamp_refinement_dumps|training_free_refine.eval_stamp_dumps'; then
+if ! pgrep -af 'run_text4seg_training_free_eval|run_training_free_stamp7b_full_eval|training_free_refine.export_text4seg_masks|training_free_refine.eval_text4seg_outputs|export_stamp_refinement_dumps|training_free_refine.eval_stamp_dumps'; then
   echo "none"
 fi
