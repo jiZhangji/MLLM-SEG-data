@@ -45,3 +45,28 @@ bash run_training_free_refine_full_eval.sh
 
 The combined report is written to
 `../outputs/training_free_refine_refcocog_full_comparison/combined_summary.md`.
+
+## Text4Seg integration
+
+The shared graph core also accepts full-image probabilities and hard masks.
+For official Text4Seg outputs, hard-mask uncertainty is constructed from the
+distance to the coarse boundary, so refinement remains training-free and does
+not read GT. The evaluator consumes Text4Seg's official sibling files:
+
+```text
+*_pred_mask.png
+*_gt_mask.png
+*_image.png
+*_sam_mask.png (optional comparison)
+```
+
+The complete server runner clones Text4Seg, creates a clean H200-compatible
+environment, downloads SAM-H for comparison, runs Text4Seg on the exact flat
+JSON already used by STAMP, and evaluates coarse/training-free/SAM masks:
+
+```bash
+bash run_text4seg_training_free_eval.sh
+```
+
+It defaults to complete RefCOCOg val(U). Set `TEXT4SEG_EVAL_JSON`, result paths,
+and optionally `TEXT4SEG_EVAL_LIMIT` when starting a smoke or test(U) run.

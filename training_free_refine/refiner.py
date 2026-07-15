@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from scipy import sparse
+from scipy.ndimage import binary_dilation, binary_erosion, distance_transform_edt
 from scipy.sparse.linalg import cg
 from skimage.color import rgb2lab
 from skimage.segmentation import slic
@@ -61,6 +62,20 @@ def stamp_probability(
 def probability_uncertainty(probability: np.ndarray) -> np.ndarray:
     probability = np.asarray(probability, dtype=np.float64)
     return np.clip(1.0 - np.abs(2.0 * probability - 1.0), 0.0, 1.0)
+
+
+def boundary_uncertainty(mask: np.ndarray, sigma: float = 8.0) -> np.ndarray:
+    """Construct uncertainty around a hard mask boundary without learned scores."""
+    if sigma <= 0:
+        raise ValueError("sigma must be positive.")
+    hard_mask = np.asarray(mask, dtype=bool)
+    if hard_mask.ndim != 2:
+        raise ValueError(f"mask must have shape [H, W], got {hard_mask.shape}")
+    if not hard_mask.any() or hard_mask.all():
+        return np.zeros(hard_mask.shape, dtype=np.float64)
+    boundary = np.logical_xor(binary_dilation(hard_mask), binary_erosion(hard_mask))
+    distance = distance_transform_edt(~boundary)
+    return np.exp(-0.5 * np.square(distance / sigma))
 
 
 def _segment_means(values: np.ndarray, labels: np.ndarray, count: int) -> np.ndarray:
@@ -169,6 +184,29 @@ class TrainingFreeUncertaintyRefiner:
         mask_logits: torch.Tensor,
         grid_hw: tuple[int, int],
     ) -> dict[str, object]:
+        image_hw = (int(image.shape[0]), int(image.shape[1]))
+        coarse = stamp_probability(mask_logits, grid_hw, image_hw).numpy()
+        return self.refine_probability(image, coarse)
+
+    def refine_hard_mask(
+        self,
+        image: np.ndarray,
+        mask: np.ndarray,
+        boundary_sigma: float = 8.0,
+    ) -> dict[str, object]:
+        coarse = np.asarray(mask, dtype=np.float64)
+        return self.refine_probability(
+            image,
+            coarse,
+            uncertainty=boundary_uncertainty(coarse >= self.config.threshold, boundary_sigma),
+        )
+
+    def refine_probability(
+        self,
+        image: np.ndarray,
+        probability: np.ndarray | torch.Tensor,
+        uncertainty: np.ndarray | torch.Tensor | None = None,
+    ) -> dict[str, object]:
         image_rgb = np.asarray(image)
         if image_rgb.ndim != 3 or image_rgb.shape[2] != 3:
             raise ValueError(f"image must have shape [H, W, 3], got {image_rgb.shape}")
@@ -178,8 +216,25 @@ class TrainingFreeUncertaintyRefiner:
             image_rgb = np.clip(image_rgb.astype(np.float32), 0.0, 1.0)
 
         image_hw = (int(image_rgb.shape[0]), int(image_rgb.shape[1]))
-        coarse = stamp_probability(mask_logits, grid_hw, image_hw).numpy().astype(np.float64)
-        uncertainty = probability_uncertainty(coarse)
+        if isinstance(probability, torch.Tensor):
+            probability = probability.detach().float().cpu().numpy()
+        coarse = np.asarray(probability, dtype=np.float64)
+        if coarse.shape != image_hw:
+            raise ValueError(f"probability must match image shape {image_hw}, got {coarse.shape}")
+        if not np.isfinite(coarse).all():
+            raise ValueError("probability contains non-finite values.")
+        coarse = np.clip(coarse, 0.0, 1.0)
+        if uncertainty is None:
+            uncertainty_map = probability_uncertainty(coarse)
+        else:
+            if isinstance(uncertainty, torch.Tensor):
+                uncertainty = uncertainty.detach().float().cpu().numpy()
+            uncertainty_map = np.asarray(uncertainty, dtype=np.float64)
+            if uncertainty_map.shape != image_hw:
+                raise ValueError(f"uncertainty must match image shape {image_hw}, got {uncertainty_map.shape}")
+            if not np.isfinite(uncertainty_map).all():
+                raise ValueError("uncertainty contains non-finite values.")
+            uncertainty_map = np.clip(uncertainty_map, 0.0, 1.0)
         labels = slic(
             image_rgb,
             n_segments=self.config.n_segments,
@@ -193,14 +248,14 @@ class TrainingFreeUncertaintyRefiner:
             labels,
             image_rgb,
             coarse,
-            uncertainty,
+            uncertainty_map,
             self.config,
         )
-        fusion = np.power(uncertainty, self.config.fusion_power)
+        fusion = np.power(uncertainty_map, self.config.fusion_power)
         refined = np.clip((1.0 - fusion) * coarse + fusion * graph_probability, 0.0, 1.0)
         return {
             "coarse_probability": torch.from_numpy(coarse.astype(np.float32)),
-            "uncertainty_map": torch.from_numpy(uncertainty.astype(np.float32)),
+            "uncertainty_map": torch.from_numpy(uncertainty_map.astype(np.float32)),
             "superpixels": torch.from_numpy(labels),
             "graph_probability": torch.from_numpy(graph_probability.astype(np.float32)),
             "refined_probability": torch.from_numpy(refined.astype(np.float32)),
