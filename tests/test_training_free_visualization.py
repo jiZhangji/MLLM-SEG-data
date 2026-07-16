@@ -60,6 +60,8 @@ class TrainingFreeVisualizationTests(unittest.TestCase):
                 "4",
                 "--panels-per-group",
                 "1",
+                "--dpi",
+                "80",
             ]
             with patch("sys.argv", run_argv):
                 self.assertEqual(visualize_comparison_main(), 0)
@@ -82,6 +84,8 @@ class TrainingFreeVisualizationTests(unittest.TestCase):
                 f"MethodB={analysis_rows}",
                 "--output-dir",
                 str(combined_dir),
+                "--dpi",
+                "80",
             ]
             with patch("sys.argv", compare_argv):
                 self.assertEqual(visualize_comparison_main(), 0)

@@ -235,11 +235,14 @@ def save_sample_panel(
     output_path: Path,
     threshold: float,
     category: str,
+    dpi: int,
 ) -> None:
     coarse = view.coarse_probability >= threshold
     refined = view.refined_probability >= threshold
     transition, _ = transition_map(view, threshold)
-    slic_overlay = mark_boundaries(view.image / 255.0, view.superpixels, color=(1.0, 1.0, 1.0), mode="thick")
+    slic_overlay = mark_boundaries(
+        view.image / 255.0, view.superpixels, color=(1.0, 1.0, 1.0), mode="thick"
+    ).astype(np.float32)
     figure, axes = plt.subplots(2, 4, figsize=(17.2, 9.2), constrained_layout=True)
     panels = [
         (view.image, "Input image", None, None),
@@ -293,7 +296,7 @@ def save_sample_panel(
         fontweight="bold",
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output_path, dpi=190, bbox_inches="tight", facecolor="white")
+    figure.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor="white")
     plt.close(figure)
 
 
@@ -307,7 +310,7 @@ def correlation(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.corrcoef(x, y)[0, 1])
 
 
-def save_run_overview(rows: list[dict[str, Any]], label: str, output_dir: Path) -> None:
+def save_run_overview(rows: list[dict[str, Any]], label: str, output_dir: Path, dpi: int) -> None:
     delta = numeric(rows, "iou_delta")
     coarse = numeric(rows, "coarse_iou")
     uncertainty = numeric(rows, "uncertain_fraction")
@@ -342,7 +345,7 @@ def save_run_overview(rows: list[dict[str, Any]], label: str, output_dir: Path) 
     for axis in axes.flat:
         axis.grid(alpha=0.2, linewidth=0.6)
     for suffix in ("png", "pdf"):
-        figure.savefig(output_dir / f"run_overview.{suffix}", dpi=190, bbox_inches="tight", facecolor="white")
+        figure.savefig(output_dir / f"run_overview.{suffix}", dpi=dpi, bbox_inches="tight", facecolor="white")
     plt.close(figure)
 
 
@@ -477,7 +480,7 @@ def run_analysis(args: argparse.Namespace) -> int:
         json.dumps(summary, indent=2, ensure_ascii=True), encoding="utf-8"
     )
     write_run_markdown(summary, args.output_dir / "visual_analysis_summary.md")
-    save_run_overview(analysis_rows, args.label, args.output_dir)
+    save_run_overview(analysis_rows, args.label, args.output_dir, args.dpi)
     for category, selected in select_rows(analysis_rows, args.panels_per_group).items():
         for rank, analysis_row in enumerate(selected, start=1):
             source_row = source_rows[int(analysis_row["source_row_index"])]
@@ -485,7 +488,14 @@ def run_analysis(args: argparse.Namespace) -> int:
             output_path = args.output_dir / "sample_panels" / category / (
                 f"{rank:02d}_{safe_name(view.name)}.png"
             )
-            save_sample_panel(view, analysis_row, output_path, args.threshold, category.replace("_", " "))
+            save_sample_panel(
+                view,
+                analysis_row,
+                output_path,
+                args.threshold,
+                category.replace("_", " "),
+                args.dpi,
+            )
     print(json.dumps(summary, indent=2, ensure_ascii=True))
     return 0
 
@@ -497,7 +507,9 @@ def parse_run_spec(value: str) -> tuple[str, Path]:
     return label.strip(), Path(path).expanduser()
 
 
-def save_cross_model_figure(runs: list[tuple[str, list[dict[str, str]]]], output_dir: Path) -> list[dict[str, Any]]:
+def save_cross_model_figure(
+    runs: list[tuple[str, list[dict[str, str]]]], output_dir: Path, dpi: int
+) -> list[dict[str, Any]]:
     summaries = [summarize_analysis(rows, label, "comparison") for label, rows in runs]
     labels = [item["label"] for item in summaries]
     x = np.arange(len(labels))
@@ -539,7 +551,7 @@ def save_cross_model_figure(runs: list[tuple[str, list[dict[str, str]]]], output
     figure.suptitle("Original methods vs Training-Free refinement", fontsize=15, fontweight="bold")
     output_dir.mkdir(parents=True, exist_ok=True)
     for suffix in ("png", "pdf"):
-        figure.savefig(output_dir / f"cross_model_comparison.{suffix}", dpi=190, bbox_inches="tight", facecolor="white")
+        figure.savefig(output_dir / f"cross_model_comparison.{suffix}", dpi=dpi, bbox_inches="tight", facecolor="white")
     plt.close(figure)
     return summaries
 
@@ -548,7 +560,7 @@ def compare_runs(args: argparse.Namespace) -> int:
     runs = [(label, read_csv(path.resolve())) for label, path in args.run]
     if len(runs) < 2:
         raise ValueError("At least two --run inputs are required.")
-    summaries = save_cross_model_figure(runs, args.output_dir)
+    summaries = save_cross_model_figure(runs, args.output_dir, args.dpi)
     (args.output_dir / "cross_model_summary.json").write_text(
         json.dumps({"runs": summaries}, indent=2, ensure_ascii=True), encoding="utf-8"
     )
@@ -592,20 +604,22 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--label", required=True)
     run.add_argument("--limit", type=int, default=0)
     run.add_argument("--panels-per-group", type=int, default=3)
+    run.add_argument("--dpi", type=int, default=190)
     run.add_argument("--boundary-sigma", type=float, default=8.0)
     run.add_argument("--boundary-tolerance", type=int, default=2)
     add_refiner_arguments(run)
     compare = subparsers.add_parser("compare", help="Compare two or more analyzed runs.")
     compare.add_argument("--run", type=parse_run_spec, action="append", required=True)
     compare.add_argument("--output-dir", type=Path, required=True)
+    compare.add_argument("--dpi", type=int, default=190)
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "run":
-        if args.limit < 0 or args.panels_per_group < 0:
-            raise ValueError("limit and panels-per-group must be non-negative.")
+        if args.limit < 0 or args.panels_per_group < 0 or args.dpi <= 0:
+            raise ValueError("limit/panels-per-group must be non-negative and dpi must be positive.")
         return run_analysis(args)
     return compare_runs(args)
 

@@ -88,7 +88,8 @@ TEXT4SEG_COMPLETED=0
 if [[ -d "${RESULTS_ROOT}/gt_masks" ]]; then
   TEXT4SEG_COMPLETED="$(find "${RESULTS_ROOT}/gt_masks" -maxdepth 1 -type f -name '*.png' | wc -l)"
 fi
-echo "Existing complete Text4Seg samples: ${TEXT4SEG_COMPLETED} / 4896"
+TEXT4SEG_EXPECTED="$(conda run -n "${CONDA_ENV}" python -c 'import json,sys; n=len(json.load(open(sys.argv[1], encoding="utf-8"))); limit=int(sys.argv[2]); print(min(n, limit) if limit else n)' "${EVAL_JSON}" "${EVAL_LIMIT}")"
+echo "Existing complete Text4Seg samples: ${TEXT4SEG_COMPLETED} / ${TEXT4SEG_EXPECTED}"
 cd "${REPO}"
 CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" PYTHONPATH="${REPO}:${PYTHONPATH:-}" \
   conda run --no-capture-output -n "${CONDA_ENV}" \
