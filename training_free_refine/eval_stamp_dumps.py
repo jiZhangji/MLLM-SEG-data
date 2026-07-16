@@ -143,6 +143,18 @@ def main() -> int:
         mask_path = resolve_asset(payload["mask_path"], dump_path)
         image = np.asarray(Image.open(image_path).convert("RGB"))
         target = np.asarray(Image.open(mask_path).convert("L")) > 0
+        ignore_path = None
+        ignore = np.zeros(target.shape, dtype=bool)
+        if payload.get("ignore_path"):
+            ignore_path = resolve_asset(payload["ignore_path"], dump_path)
+            ignore = np.asarray(Image.open(ignore_path).convert("L")) > 0
+            if ignore.shape != target.shape:
+                ignore = np.asarray(
+                    Image.fromarray(ignore.astype(np.uint8) * 255).resize(
+                        (target.shape[1], target.shape[0]), Image.Resampling.NEAREST
+                    )
+                ) > 0
+            target &= ~ignore
         if image.shape[:2] != target.shape:
             image = np.asarray(Image.fromarray(image).resize((target.shape[1], target.shape[0]), Image.Resampling.BILINEAR))
 
@@ -154,6 +166,8 @@ def main() -> int:
         refined_probability = output["refined_probability"].numpy()
         coarse_mask = coarse_probability >= config.threshold
         refined_mask = refined_probability >= config.threshold
+        coarse_mask &= ~ignore
+        refined_mask &= ~ignore
         coarse_iou, coarse_inter, coarse_uni = mask_iou(coarse_mask, target)
         refined_iou, refined_inter, refined_uni = mask_iou(refined_mask, target)
         coarse_intersection += coarse_inter
@@ -167,6 +181,10 @@ def main() -> int:
                 "dump": str(dump_path),
                 "image": str(image_path),
                 "mask": str(mask_path),
+                "ignore_mask": str(ignore_path) if ignore_path is not None else "",
+                "no_target": bool(payload.get("source_item", {}).get("no_target", False)),
+                "empty_prediction": bool(payload.get("empty_prediction", False)),
+                "prediction_error": str(payload.get("prediction_error", "")),
                 "grid_h": int(payload["grid_hw"][0]),
                 "grid_w": int(payload["grid_hw"][1]),
                 "coarse_iou": coarse_iou,
@@ -196,6 +214,7 @@ def main() -> int:
     count = len(rows)
     improved = sum(row["iou_delta"] > 1e-12 for row in rows)
     degraded = sum(row["iou_delta"] < -1e-12 for row in rows)
+    no_target_rows = [row for row in rows if row["no_target"]]
     summary = {
         "samples": count,
         "coarse_mean_iou": sum(row["coarse_iou"] for row in rows) / count,
@@ -210,6 +229,14 @@ def main() -> int:
         "improved_samples": improved,
         "degraded_samples": degraded,
         "unchanged_samples": count - improved - degraded,
+        "no_target_samples": len(no_target_rows),
+        "no_target_coarse_gIoU": (
+            sum(row["coarse_iou"] for row in no_target_rows) / len(no_target_rows) if no_target_rows else None
+        ),
+        "no_target_refined_gIoU": (
+            sum(row["refined_iou"] for row in no_target_rows) / len(no_target_rows) if no_target_rows else None
+        ),
+        "empty_prediction_samples": sum(bool(row["empty_prediction"]) for row in rows),
         "seconds_per_sample": elapsed_total / count,
         "config": asdict(config),
         "rows_csv": str(rows_path),

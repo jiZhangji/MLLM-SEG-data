@@ -126,6 +126,14 @@ def get_mask_path(item: dict[str, Any], root: Path) -> Path:
     return first_existing_path(candidates, root)
 
 
+def get_ignore_path(item: dict[str, Any], root: Path) -> Path | None:
+    values = item.get("ignore_masks") or item.get("ignore_mask") or item.get("ignore_path")
+    if values is None:
+        return None
+    candidates = [str(x) for x in values] if isinstance(values, list) else [str(values)]
+    return first_existing_path(candidates, root)
+
+
 def normalize_refinement_outputs(outputs: Any) -> dict[str, Any]:
     if isinstance(outputs, tuple):
         # Allow segmenter APIs that return (masks, response_text, refinement_dict)
@@ -220,6 +228,7 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
     exported = []
     skipped = []
     failed = []
+    empty_predictions = []
     for local_index, item in enumerate(tqdm(items, desc="export_refinement_dumps")):
         index = args.offset + local_index
         out_path = output_dir / f"{args.split_name}_{index:06d}.pt"
@@ -229,30 +238,53 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
 
         image_path = get_image_path(item, root)
         mask_path = get_mask_path(item, root)
+        ignore_path = get_ignore_path(item, root)
         query = build_query(item, args.prompt_mode, official_templates)
         image = Image.open(image_path).convert("RGB")
+        dump = {
+            "name": f"{args.split_name}_{index:06d}",
+            "index": index,
+            "query": query,
+            "image_path": str(image_path),
+            "mask_path": str(mask_path),
+            "ignore_path": str(ignore_path) if ignore_path is not None else None,
+            "source_item": {
+                "label": item.get("label"),
+                "source_id": item.get("source_id"),
+                "source_split": item.get("source_split"),
+                "source_dataset": item.get("source_dataset"),
+                "no_target": bool(item.get("no_target", False)),
+            },
+        }
         try:
             with torch.inference_mode():
                 outputs = call_refinement_export(segmenter, image, query)
-            dump = {
-                "name": f"{args.split_name}_{index:06d}",
-                "index": index,
-                "query": query,
-                "image_path": str(image_path),
-                "mask_path": str(mask_path),
-                "source_item": {
-                    "label": item.get("label"),
-                    "source_id": item.get("source_id"),
-                    "source_split": item.get("source_split"),
-                },
-                "mask_logits": outputs["mask_logits"],
-                "mask_hidden": outputs["mask_hidden"],
-                "grid_hw": outputs["grid_hw"],
-            }
+            dump.update(
+                {
+                    "mask_logits": outputs["mask_logits"],
+                    "mask_hidden": outputs["mask_hidden"],
+                    "grid_hw": outputs["grid_hw"],
+                }
+            )
             torch.save(dump, out_path)
             exported.append(str(out_path))
         except Exception as exc:
-            failed.append({"index": index, "image": str(image_path), "error": f"{type(exc).__name__}: {exc}"})
+            error = f"{type(exc).__name__}: {exc}"
+            if args.empty_on_failure:
+                dump.update(
+                    {
+                        "mask_logits": torch.tensor([[[20.0, -20.0]]], dtype=torch.float32),
+                        "mask_hidden": torch.zeros((1, 1, 1), dtype=torch.float32),
+                        "grid_hw": (1, 1),
+                        "prediction_error": error,
+                        "empty_prediction": True,
+                    }
+                )
+                torch.save(dump, out_path)
+                exported.append(str(out_path))
+                empty_predictions.append({"index": index, "image": str(image_path), "error": error})
+                continue
+            failed.append({"index": index, "image": str(image_path), "error": error})
             if args.fail_fast:
                 raise
 
@@ -266,9 +298,11 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
         "num_exported": len(exported),
         "num_skipped": len(skipped),
         "num_failed": len(failed),
+        "num_empty_predictions": len(empty_predictions),
         "exported": exported,
         "skipped": skipped,
         "failed": failed,
+        "empty_predictions": empty_predictions,
     }
 
 
@@ -288,6 +322,11 @@ def main() -> int:
     parser.add_argument("--device-map", default="cuda")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
+    parser.add_argument(
+        "--empty-on-failure",
+        action="store_true",
+        help="Record a valid empty prediction when STAMP emits no mask; required for generalized/no-target evaluation.",
+    )
     args = parser.parse_args()
 
     report = export_dumps(args)
