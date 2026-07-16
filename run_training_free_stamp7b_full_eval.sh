@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT="${MLLM_SEG_ROOT:-/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/lh/or/MLLM-SEG}"
-REPO="${ROOT}/MLLM-SEG-data"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${TRAINING_FREE_REPO:-${SCRIPT_DIR}}"
 STAMP_ENV="${STAMP_ENV_PATH:-/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/my_global_cache/conda/envs/STAMP}"
 MODEL_NAME="${STAMP7B_MODEL_NAME:-${ROOT}/models/STAMP-7B-lora}"
 GPU="${CUDA_DEVICE:-0}"

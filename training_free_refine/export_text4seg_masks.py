@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from PIL import Image
 from tqdm import tqdm
 
-from onepass_stamp.data import OnePassDataset, extract_target_text
+from .data import ReferringSegDataset, extract_target_text
 
 
 def parse_args() -> argparse.Namespace:
@@ -151,7 +151,7 @@ def main() -> int:
     sam = sam.to(dtype=torch.float32, device="cuda")
     predictor = SamPredictor(sam)
 
-    dataset = OnePassDataset(args.eval_json, data_root=args.data_root, limit=args.limit, offset=args.offset)
+    dataset = ReferringSegDataset(args.eval_json, data_root=args.data_root, limit=args.limit, offset=args.offset)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     pred_dir = args.output_dir / "pred_masks"
     sam_dir = args.output_dir / "sam_masks"

@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT="${MLLM_SEG_ROOT:-/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/lh/or/MLLM-SEG}"
-REPO="${ROOT}/MLLM-SEG-data"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${TRAINING_FREE_REPO:-${SCRIPT_DIR}}"
 VAL_DUMPS="${VAL_DUMPS:-${ROOT}/outputs/refine_stamp_dumps/refcocog_val_full}"
 TEST_DUMPS="${TEST_DUMPS:-${ROOT}/outputs/refine_stamp_dumps/refcocog_test_full}"
 VAL_OUTPUT="${VAL_OUTPUT:-${ROOT}/outputs/training_free_refine_refcocog_val_full}"

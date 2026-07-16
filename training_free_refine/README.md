@@ -87,3 +87,17 @@ and optionally `TEXT4SEG_EVAL_LIMIT` when starting a smoke or test(U) run.
 The released Text4Seg checkpoint records the author's relative CLIP path; the
 runner maps it to the equivalent Hugging Face identifier
 `openai/clip-vit-large-patch14-336` before model construction.
+
+## Publication-quality visualization
+
+Analyze complete STAMP-7B and Text4Seg val results, generate uncertainty-aware
+sample panels, aggregate diagnostics, and a cross-model comparison with:
+
+```bash
+bash run_training_free_visualizations.sh
+```
+
+The visualization step reuses saved dumps and masks and does not rerun either
+base model. Use `TRAINING_FREE_VIS_LIMIT=8` for a quick layout smoke test. See
+`TRAINING_FREE_VISUALIZATION_GUIDE_CN.md` for panel semantics, output paths,
+selection protocol, tests, and full server commands.

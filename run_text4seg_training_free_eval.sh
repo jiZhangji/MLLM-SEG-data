@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT="${MLLM_SEG_ROOT:-/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/lh/or/MLLM-SEG}"
-REPO="${ROOT}/MLLM-SEG-data"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${TRAINING_FREE_REPO:-${SCRIPT_DIR}}"
 TEXT4SEG_DIR="${TEXT4SEG_DIR:-${ROOT}/code/Text4Seg}"
 CONDA_ENV="${TEXT4SEG_CONDA_ENV:-text4seg-tf}"
 MODEL_PATH="${TEXT4SEG_MODEL_PATH:-lmc22/text4seg-llava-7b-p24}"
