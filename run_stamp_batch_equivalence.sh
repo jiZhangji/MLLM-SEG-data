@@ -14,6 +14,9 @@ OUTPUT_ROOT="${STAMP_BATCH_CHECK_OUTPUT:-${ROOT}/outputs/stamp_batch_equivalence
 SINGLE_DIR="${OUTPUT_ROOT}/single"
 BATCH_DIR="${OUTPUT_ROOT}/batch"
 REPORT="${OUTPUT_ROOT}/equivalence.json"
+SINGLE_EVAL_DIR="${OUTPUT_ROOT}/single_eval"
+BATCH_EVAL_DIR="${OUTPUT_ROOT}/batch_eval"
+METRICS_REPORT="${OUTPUT_ROOT}/metrics_comparison.json"
 
 if [[ ! -x "${STAMP_ENV}/bin/python" ]]; then
   echo "ERROR: STAMP environment not found: ${STAMP_ENV}" >&2
@@ -33,6 +36,7 @@ export CUDA_VISIBLE_DEVICES="${GPU}"
 export TOKENIZERS_PARALLELISM=false
 export STAMP_DISABLE_CUDNN="${STAMP_DISABLE_CUDNN:-1}"
 mkdir -p "${SINGLE_DIR}" "${BATCH_DIR}"
+rm -f "${OUTPUT_ROOT}/PASSED"
 cd "${SCRIPT_DIR}"
 
 python offline_rstamp/scripts/patch_stamp_refinement_export.py \
@@ -50,10 +54,56 @@ EVAL_LIMIT="${LIMIT}" OUTPUT_DIR="${BATCH_DIR}" BATCH_SIZE="${BATCH_SIZE}" OVERW
   bash offline_rstamp/run/75_export_refcocog_refine_stamp_dumps.sh
 
 echo "[3/3] Comparing text, grids, token labels and logits"
+set +e
 python -m training_free_refine.compare_stamp_batch_dumps \
   --single-dir "${SINGLE_DIR}" \
   --batch-dir "${BATCH_DIR}" \
   --expected "${LIMIT}" \
   --output "${REPORT}"
+COMPARE_STATUS=$?
+set -e
+
+echo "[metrics] Evaluating paper-style masks for batch size 1"
+python -m training_free_refine.eval_stamp_dumps \
+  --input-dir "${SINGLE_DIR}" \
+  --output-dir "${SINGLE_EVAL_DIR}" \
+  --n-segments 1024 \
+  --graph-lambda 1.0 \
+  --save-visualizations 0
+
+echo "[metrics] Evaluating paper-style masks for requested batch size ${BATCH_SIZE}"
+python -m training_free_refine.eval_stamp_dumps \
+  --input-dir "${BATCH_DIR}" \
+  --output-dir "${BATCH_EVAL_DIR}" \
+  --n-segments 1024 \
+  --graph-lambda 1.0 \
+  --save-visualizations 0
+
+SINGLE_SUMMARY="${SINGLE_EVAL_DIR}/eval_summary.json" \
+BATCH_SUMMARY="${BATCH_EVAL_DIR}/eval_summary.json" \
+METRICS_REPORT="${METRICS_REPORT}" \
+python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+single = json.loads(Path(os.environ["SINGLE_SUMMARY"]).read_text(encoding="utf-8"))
+batch = json.loads(Path(os.environ["BATCH_SUMMARY"]).read_text(encoding="utf-8"))
+keys = ("coarse_mean_iou", "refined_mean_iou", "coarse_cIoU", "refined_cIoU")
+report = {
+    "batch_size_1": {key: single[key] for key in keys},
+    "requested_batch_size": {key: batch[key] for key in keys},
+    "batch_minus_single": {key: batch[key] - single[key] for key in keys},
+}
+Path(os.environ["METRICS_REPORT"]).write_text(
+    json.dumps(report, indent=2, allow_nan=False), encoding="utf-8"
+)
+print(json.dumps(report, indent=2, allow_nan=False))
+PY
+
+if (( COMPARE_STATUS != 0 )); then
+  echo "ERROR: STAMP batch equivalence failed. Metrics were still written to ${METRICS_REPORT}." >&2
+  exit "${COMPARE_STATUS}"
+fi
 touch "${OUTPUT_ROOT}/PASSED"
 echo "STAMP batch equivalence passed: ${REPORT}"
