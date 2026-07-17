@@ -14,6 +14,7 @@ STAMP_DATA="${MLLM_SEG_ROOT}/code/STAMP/playground/data"
 SPLIT="${SPLIT:-refcocog_val}"
 EVAL_LIMIT="${EVAL_LIMIT:-20}"
 OFFSET="${OFFSET:-0}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
 OVERWRITE="${OVERWRITE:-0}"
 EMPTY_ON_FAILURE="${EMPTY_ON_FAILURE:-0}"
 OUTPUT_DIR="${OUTPUT_DIR:-${MLLM_SEG_ROOT}/outputs/refine_stamp_dumps/${SPLIT}_${EVAL_LIMIT}}"
@@ -39,6 +40,7 @@ PYTHONPATH="${REFINE_SRC}:${PYTHONPATH:-}" python -m refine_stamp.scripts.export
   --split-name "${SPLIT}" \
   --limit "${EVAL_LIMIT}" \
   --offset "${OFFSET}" \
+  --batch-size "${BATCH_SIZE}" \
   --min-pixels "${STAMP_MIN_PIXELS}" \
   --max-pixels "${STAMP_MAX_PIXELS}" \
   --prompt-mode "${STAMP_PROMPT_MODE}" \

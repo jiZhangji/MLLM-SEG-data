@@ -7,6 +7,8 @@ GPU_7B="${STAMP7B_GPU:-0}"
 GPU_2B="${STAMP2B_GPU:-1}"
 MIN_FREE_2B_MB="${STAMP2B_MIN_FREE_GPU_MB:-24000}"
 POLL_SECONDS="${STAMP_GPU_POLL_SECONDS:-10}"
+STAMP2B_BATCH_SIZE="${STAMP2B_BATCH_SIZE:-8}"
+STAMP7B_BATCH_SIZE="${STAMP7B_BATCH_SIZE:-1}"
 LOG_DIR="${ROOT}/outputs"
 LOG_7B="${LOG_DIR}/training_free_stamp7b_refcoco_family_remaining.log"
 LOG_2B="${LOG_DIR}/training_free_stamp2b_refcoco_family_full.log"
@@ -47,7 +49,7 @@ wait_for_gpu() {
   done
 }
 
-echo "Inference policy: one sample per model call (the verified STAMP export path)."
+echo "Inference policy: batched autoregressive generation with per-sample mask export and automatic OOM splitting."
 echo "Parallel policy: STAMP-7B on physical GPU ${GPU_7B}; STAMP-2B on physical GPU ${GPU_2B}."
 
 if pgrep -af 'bash run_training_free_stamp7b_refcoco_family_eval.sh' >/dev/null; then
@@ -56,6 +58,7 @@ if pgrep -af 'bash run_training_free_stamp7b_refcoco_family_eval.sh' >/dev/null;
 else
   echo "Starting/resuming only the missing STAMP-7B RefCOCO+ splits on GPU ${GPU_7B}."
   CUDA_DEVICE="${GPU_7B}" \
+  STAMP7B_EVAL_BATCH_SIZE="${STAMP7B_BATCH_SIZE}" \
   STAMP7B_OTHER_SPLITS="refcoco+_val refcoco+_testA refcoco+_testB" \
     nohup bash run_training_free_stamp7b_refcoco_family_eval.sh \
       > "${LOG_7B}" 2>&1 < /dev/null &
@@ -66,8 +69,15 @@ if pgrep -af 'bash run_training_free_stamp2b_refcoco_family_eval.sh' >/dev/null;
   echo "STAMP-2B RefCOCO-family runner is already active; not starting a duplicate."
 else
   wait_for_gpu "${GPU_2B}" "${MIN_FREE_2B_MB}" "STAMP-2B launch"
+  batch_marker="${ROOT}/outputs/stamp_batch_equivalence/stamp2b_bs${STAMP2B_BATCH_SIZE}/PASSED"
+  if (( STAMP2B_BATCH_SIZE > 1 )) && [[ ! -f "${batch_marker}" ]]; then
+    echo "Validating STAMP-2B batch size ${STAMP2B_BATCH_SIZE} against batch size 1."
+    CUDA_DEVICE="${GPU_2B}" STAMP_BATCH_SIZE="${STAMP2B_BATCH_SIZE}" \
+      bash run_stamp_batch_equivalence.sh
+  fi
   echo "Starting/resuming STAMP-2B RefCOCO/RefCOCO+ on GPU ${GPU_2B}."
   CUDA_DEVICE="${GPU_2B}" \
+  STAMP2B_EVAL_BATCH_SIZE="${STAMP2B_BATCH_SIZE}" \
     nohup bash run_training_free_stamp2b_refcoco_family_eval.sh \
       > "${LOG_2B}" 2>&1 < /dev/null &
   echo "STAMP-2B PID: $!"

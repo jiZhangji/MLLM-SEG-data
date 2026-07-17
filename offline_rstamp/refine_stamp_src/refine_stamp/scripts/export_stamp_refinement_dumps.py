@@ -203,6 +203,31 @@ def call_refinement_export(segmenter: Any, image: Image.Image, query: str) -> di
     )
 
 
+def call_batch_refinement_export(
+    segmenter: Any,
+    images: list[Image.Image],
+    queries: list[str],
+) -> list[dict[str, Any] | Exception]:
+    fn = getattr(segmenter, "generate_batch_with_refinement_outputs", None)
+    if not callable(fn):
+        return [call_refinement_export(segmenter, image, query) for image, query in zip(images, queries)]
+
+    outputs = fn(images, queries)
+    if not isinstance(outputs, (list, tuple)) or len(outputs) != len(images):
+        raise TypeError(f"Batch refinement export returned {type(outputs).__name__}, expected {len(images)} items.")
+
+    normalized: list[dict[str, Any] | Exception] = []
+    for output in outputs:
+        if isinstance(output, dict) and output.get("batch_export_error"):
+            normalized.append(RuntimeError(str(output["batch_export_error"])))
+            continue
+        try:
+            normalized.append(normalize_refinement_outputs(output))
+        except Exception as exc:
+            normalized.append(exc)
+    return normalized
+
+
 def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
     root = args.root.expanduser().resolve()
     stamp_code_dir = args.stamp_code_dir.expanduser().resolve()
@@ -217,7 +242,6 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
     official_templates = load_official_question_templates(stamp_code_dir)
     items = load_items(json_path, args.limit, args.offset)
     output_dir.mkdir(parents=True, exist_ok=True)
-
     segmenter = GenerativeSegmenter(
         str(model_path),
         device_map=args.device_map,
@@ -225,51 +249,123 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
         max_pixels=args.max_pixels,
     )
 
-    exported = []
-    skipped = []
-    failed = []
-    empty_predictions = []
-    for local_index, item in enumerate(tqdm(items, desc="export_refinement_dumps")):
-        index = args.offset + local_index
-        out_path = output_dir / f"{args.split_name}_{index:06d}.pt"
-        if out_path.exists() and not args.overwrite:
-            skipped.append(str(out_path))
-            continue
+    exported: list[str] = []
+    skipped: list[str] = []
+    failed: list[dict[str, Any]] = []
+    empty_predictions: list[dict[str, Any]] = []
+    batch_calls = 0
+    batch_splits = 0
+    single_retries = 0
 
-        image_path = get_image_path(item, root)
-        mask_path = get_mask_path(item, root)
-        ignore_path = get_ignore_path(item, root)
-        query = build_query(item, args.prompt_mode, official_templates)
-        image = Image.open(image_path).convert("RGB")
-        dump = {
-            "name": f"{args.split_name}_{index:06d}",
-            "index": index,
-            "query": query,
-            "image_path": str(image_path),
-            "mask_path": str(mask_path),
-            "ignore_path": str(ignore_path) if ignore_path is not None else None,
-            "source_item": {
-                "label": item.get("label"),
-                "source_id": item.get("source_id"),
-                "source_split": item.get("source_split"),
-                "source_dataset": item.get("source_dataset"),
-                "no_target": bool(item.get("no_target", False)),
-            },
-        }
+    def infer_prepared(prepared: list[dict[str, Any]]) -> list[dict[str, Any] | Exception]:
+        nonlocal batch_calls, batch_splits
+        if len(prepared) == 1 or args.batch_size == 1:
+            try:
+                return [call_refinement_export(segmenter, prepared[0]["image"], prepared[0]["query"])]
+            except Exception as exc:
+                return [exc]
         try:
-            with torch.inference_mode():
-                outputs = call_refinement_export(segmenter, image, query)
-            dump.update(
-                {
-                    "mask_logits": outputs["mask_logits"],
-                    "mask_hidden": outputs["mask_hidden"],
-                    "grid_hw": outputs["grid_hw"],
-                }
+            batch_calls += 1
+            return call_batch_refinement_export(
+                segmenter,
+                [entry["image"] for entry in prepared],
+                [entry["query"] for entry in prepared],
             )
-            torch.save(dump, out_path)
-            exported.append(str(out_path))
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            batch_splits += 1
+            midpoint = len(prepared) // 2
+            print(f"WARNING: CUDA OOM at batch {len(prepared)}; retrying as {midpoint}+{len(prepared)-midpoint}.")
+            return infer_prepared(prepared[:midpoint]) + infer_prepared(prepared[midpoint:])
         except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
+            batch_splits += 1
+            midpoint = len(prepared) // 2
+            print(f"WARNING: batch export failed at size {len(prepared)} ({type(exc).__name__}: {exc}); splitting.")
+            return infer_prepared(prepared[:midpoint]) + infer_prepared(prepared[midpoint:])
+
+    progress = tqdm(total=len(items), desc="export_refinement_dumps")
+    for batch_start in range(0, len(items), args.batch_size):
+        prepared: list[dict[str, Any]] = []
+        for batch_offset, item in enumerate(items[batch_start : batch_start + args.batch_size]):
+            local_index = batch_start + batch_offset
+            index = args.offset + local_index
+            out_path = output_dir / f"{args.split_name}_{index:06d}.pt"
+            if out_path.exists() and not args.overwrite:
+                skipped.append(str(out_path))
+                progress.update(1)
+                continue
+            try:
+                image_path = get_image_path(item, root)
+                mask_path = get_mask_path(item, root)
+                ignore_path = get_ignore_path(item, root)
+                query = build_query(item, args.prompt_mode, official_templates)
+                image = Image.open(image_path).convert("RGB")
+                dump = {
+                    "name": f"{args.split_name}_{index:06d}",
+                    "index": index,
+                    "query": query,
+                    "image_path": str(image_path),
+                    "mask_path": str(mask_path),
+                    "ignore_path": str(ignore_path) if ignore_path is not None else None,
+                    "source_item": {
+                        "label": item.get("label"),
+                        "source_id": item.get("source_id"),
+                        "source_split": item.get("source_split"),
+                        "source_dataset": item.get("source_dataset"),
+                        "no_target": bool(item.get("no_target", False)),
+                    },
+                }
+                prepared.append(
+                    {
+                        "index": index,
+                        "out_path": out_path,
+                        "image_path": image_path,
+                        "image": image,
+                        "query": query,
+                        "dump": dump,
+                    }
+                )
+            except Exception as exc:
+                failed.append(
+                    {"index": index, "image": str(item.get("image", "")), "error": f"{type(exc).__name__}: {exc}"}
+                )
+                progress.update(1)
+                if args.fail_fast:
+                    progress.close()
+                    raise
+
+        if not prepared:
+            continue
+        with torch.inference_mode():
+            results = infer_prepared(prepared)
+
+        for entry, result in zip(prepared, results):
+            if isinstance(result, Exception) and args.batch_size > 1:
+                single_retries += 1
+                try:
+                    with torch.inference_mode():
+                        result = call_refinement_export(segmenter, entry["image"], entry["query"])
+                except Exception as exc:
+                    result = exc
+
+            dump = entry["dump"]
+            out_path = entry["out_path"]
+            if not isinstance(result, Exception):
+                dump.update(
+                    {
+                        "mask_logits": result["mask_logits"],
+                        "mask_hidden": result["mask_hidden"],
+                        "grid_hw": result["grid_hw"],
+                        "response_text": result.get("response_text"),
+                        "requested_batch_size": args.batch_size,
+                    }
+                )
+                torch.save(dump, out_path)
+                exported.append(str(out_path))
+                progress.update(1)
+                continue
+
+            error = f"{type(result).__name__}: {result}"
             if args.empty_on_failure:
                 dump.update(
                     {
@@ -282,11 +378,14 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 torch.save(dump, out_path)
                 exported.append(str(out_path))
-                empty_predictions.append({"index": index, "image": str(image_path), "error": error})
-                continue
-            failed.append({"index": index, "image": str(image_path), "error": error})
-            if args.fail_fast:
-                raise
+                empty_predictions.append({"index": entry["index"], "image": str(entry["image_path"]), "error": error})
+            else:
+                failed.append({"index": entry["index"], "image": str(entry["image_path"]), "error": error})
+                if args.fail_fast:
+                    progress.close()
+                    raise result
+            progress.update(1)
+    progress.close()
 
     return {
         "model": str(model_path),
@@ -295,6 +394,10 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
         "num_items": len(items),
         "offset": args.offset,
         "limit": args.limit,
+        "batch_size": args.batch_size,
+        "num_batch_calls": batch_calls,
+        "num_batch_splits": batch_splits,
+        "num_single_retries": single_retries,
         "num_exported": len(exported),
         "num_skipped": len(skipped),
         "num_failed": len(failed),
@@ -316,6 +419,7 @@ def main() -> int:
     parser.add_argument("--split-name", default="refcocog_val")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--offset", type=int, default=0)
+    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--min-pixels", type=int, default=802816)
     parser.add_argument("--max-pixels", type=int, default=1003520)
     parser.add_argument("--prompt-mode", choices=["prepared", "official", "target_only"], default="official")
@@ -328,6 +432,8 @@ def main() -> int:
         help="Record a valid empty prediction when STAMP emits no mask; required for generalized/no-target evaluation.",
     )
     args = parser.parse_args()
+    if args.batch_size < 1:
+        parser.error("--batch-size must be at least 1.")
 
     report = export_dumps(args)
     report_path = args.output_dir / "export_refinement_dumps_summary.json"

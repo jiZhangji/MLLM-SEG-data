@@ -8,6 +8,7 @@ STAMP_ENV="${STAMP_ENV_PATH:-/inspire/hdd/global_user/liuxiaotong-253108540242/y
 MODEL_NAME="${STAMP7B_MODEL_NAME:-${ROOT}/models/STAMP-7B-lora}"
 GPU="${CUDA_DEVICE:-0}"
 EVAL_LIMIT="${STAMP7B_OTHER_EVAL_LIMIT:-0}"
+BATCH_SIZE="${STAMP7B_EVAL_BATCH_SIZE:-1}"
 SPLITS_TEXT="${STAMP7B_OTHER_SPLITS:-refcoco_val refcoco_testA refcoco_testB refcoco+_val refcoco+_testA refcoco+_testB}"
 STAMP_DATA="${ROOT}/code/STAMP/playground/data"
 JSON_DIR="${STAMP_DATA}/json_eval_baseline"
@@ -48,6 +49,15 @@ if (( ${#SPLITS[@]} == 0 )); then
 fi
 
 cd "${REPO}"
+if (( BATCH_SIZE > 1 )); then
+  echo "Refreshing STAMP refinement export patch for batch size ${BATCH_SIZE}."
+  (
+    if command -v flock >/dev/null 2>&1; then flock 8; fi
+    python offline_rstamp/scripts/patch_stamp_refinement_export.py \
+      --stamp-code-dir "${ROOT}/code/STAMP" \
+      --target both
+  ) 8>"${ROOT}/outputs/.stamp_refinement_export_patch.lock"
+fi
 echo "[1/3] Preparing baseline RefCOCO-family evaluation JSONs"
 python offline_rstamp/scripts/prepare_refcoco_eval_data.py \
   --root "${ROOT}" \
@@ -77,6 +87,7 @@ for split in "${SPLITS[@]}"; do
   JSON_PATH="${json_path}" \
   EVAL_LIMIT="${EVAL_LIMIT}" \
   OUTPUT_DIR="${dump_dir}" \
+  BATCH_SIZE="${BATCH_SIZE}" \
     bash offline_rstamp/run/75_export_refcocog_refine_stamp_dumps.sh
   python -m training_free_refine.eval_stamp_dumps \
     --input-dir "${dump_dir}" \
