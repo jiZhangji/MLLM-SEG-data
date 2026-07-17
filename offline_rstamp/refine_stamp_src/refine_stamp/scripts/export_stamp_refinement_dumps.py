@@ -219,7 +219,7 @@ def call_batch_refinement_export(
     normalized: list[dict[str, Any] | Exception] = []
     for output in outputs:
         if isinstance(output, dict) and output.get("batch_export_error"):
-            normalized.append(RuntimeError(json.dumps(output, ensure_ascii=True)))
+            normalized.append(RuntimeError(str(output["batch_export_error"])))
             continue
         try:
             normalized.append(normalize_refinement_outputs(output))
@@ -256,7 +256,6 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
     batch_calls = 0
     batch_splits = 0
     single_retries = 0
-    single_retry_records: list[dict[str, Any]] = []
     adaptive_batch_size = args.batch_size
 
     def infer_prepared(prepared: list[dict[str, Any]]) -> list[dict[str, Any] | Exception]:
@@ -346,11 +345,8 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
             results = infer_prepared(prepared)
 
         for entry, result in zip(prepared, results):
-            batch_retry_error = None
             if isinstance(result, Exception) and args.batch_size > 1:
                 single_retries += 1
-                batch_retry_error = f"{type(result).__name__}: {result}"
-                single_retry_records.append({"index": entry["index"], "batch_error": batch_retry_error})
                 try:
                     with torch.inference_mode():
                         result = call_refinement_export(segmenter, entry["image"], entry["query"])
@@ -367,7 +363,6 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
                         "grid_hw": result["grid_hw"],
                         "response_text": result.get("response_text"),
                         "requested_batch_size": args.batch_size,
-                        "batch_retry_error": batch_retry_error,
                     }
                 )
                 torch.save(dump, out_path)
@@ -384,7 +379,6 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
                         "grid_hw": (1, 1),
                         "prediction_error": error,
                         "empty_prediction": True,
-                        "batch_retry_error": batch_retry_error,
                     }
                 )
                 torch.save(dump, out_path)
@@ -411,7 +405,6 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
         "num_batch_calls": batch_calls,
         "num_batch_splits": batch_splits,
         "num_single_retries": single_retries,
-        "single_retry_records": single_retry_records,
         "num_exported": len(exported),
         "num_skipped": len(skipped),
         "num_failed": len(failed),

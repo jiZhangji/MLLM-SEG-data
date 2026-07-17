@@ -52,7 +52,6 @@ def _refine_stamp_generate_with_refinement_outputs(self, image: Image.Image, pro
     outputs = self.model.generate(
         **inputs,
         max_new_tokens=1024,
-        do_sample=False,
         use_cache=True,
         return_dict_in_generate=True,
         eos_token_id=self.eos_token_id,
@@ -179,7 +178,6 @@ def _refine_stamp_generate_batch_with_refinement_outputs(self, images, prompts):
     outputs = self.model.generate(
         **inputs,
         max_new_tokens=1024,
-        do_sample=False,
         use_cache=True,
         return_dict_in_generate=True,
         eos_token_id=self.eos_token_id,
@@ -187,10 +185,6 @@ def _refine_stamp_generate_batch_with_refinement_outputs(self, images, prompts):
     )
     full_past_key_values = outputs.past_key_values
     legacy_cache = full_past_key_values.to_legacy_cache()
-    rope_owner = getattr(self.model, "model", None)
-    batched_rope_deltas = getattr(rope_owner, "rope_deltas", None)
-    if torch.is_tensor(batched_rope_deltas):
-        batched_rope_deltas = batched_rope_deltas.clone()
 
     raw_patch_counts = [int(grid.prod().item()) for grid in image_grid_thw]
     raw_patch_offsets = [0]
@@ -199,7 +193,6 @@ def _refine_stamp_generate_batch_with_refinement_outputs(self, images, prompts):
 
     batch_outputs = []
     for batch_index in range(len(images)):
-        response_text = None
         try:
             sequence = outputs.sequences[batch_index]
             generated = sequence[input_width:]
@@ -236,9 +229,6 @@ def _refine_stamp_generate_batch_with_refinement_outputs(self, images, prompts):
             pixel_start = raw_patch_offsets[batch_index]
             pixel_end = raw_patch_offsets[batch_index + 1]
             sample_pixels = inputs["pixel_values"][pixel_start:pixel_end]
-
-            if torch.is_tensor(batched_rope_deltas) and batched_rope_deltas.shape[0] == len(images):
-                rope_owner.rope_deltas = batched_rope_deltas[batch_index : batch_index + 1].clone()
 
             seg_forward_outputs = self.model(
                 input_ids=mask_ids,
@@ -280,16 +270,7 @@ def _refine_stamp_generate_batch_with_refinement_outputs(self, images, prompts):
                 }
             )
         except Exception as exc:
-            batch_outputs.append(
-                {
-                    "batch_export_error": f"{type(exc).__name__}: {exc}",
-                    "batch_response_text": response_text,
-                    "batch_index": batch_index,
-                }
-            )
-
-    if rope_owner is not None:
-        rope_owner.rope_deltas = batched_rope_deltas
+            batch_outputs.append({"batch_export_error": f"{type(exc).__name__}: {exc}"})
 
     return batch_outputs
 
