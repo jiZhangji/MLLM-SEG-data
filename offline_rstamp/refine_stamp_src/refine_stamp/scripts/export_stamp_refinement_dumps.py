@@ -256,10 +256,9 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
     batch_calls = 0
     batch_splits = 0
     single_retries = 0
-    adaptive_batch_size = args.batch_size
 
     def infer_prepared(prepared: list[dict[str, Any]]) -> list[dict[str, Any] | Exception]:
-        nonlocal adaptive_batch_size, batch_calls, batch_splits
+        nonlocal batch_calls, batch_splits
         if len(prepared) == 1 or args.batch_size == 1:
             try:
                 return [call_refinement_export(segmenter, prepared[0]["image"], prepared[0]["query"])]
@@ -276,7 +275,6 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
             torch.cuda.empty_cache()
             batch_splits += 1
             midpoint = len(prepared) // 2
-            adaptive_batch_size = min(adaptive_batch_size, max(1, midpoint))
             print(f"WARNING: CUDA OOM at batch {len(prepared)}; retrying as {midpoint}+{len(prepared)-midpoint}.")
             return infer_prepared(prepared[:midpoint]) + infer_prepared(prepared[midpoint:])
         except Exception as exc:
@@ -286,11 +284,9 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
             return infer_prepared(prepared[:midpoint]) + infer_prepared(prepared[midpoint:])
 
     progress = tqdm(total=len(items), desc="export_refinement_dumps")
-    batch_start = 0
-    while batch_start < len(items):
+    for batch_start in range(0, len(items), args.batch_size):
         prepared: list[dict[str, Any]] = []
-        batch_items = items[batch_start : batch_start + adaptive_batch_size]
-        for batch_offset, item in enumerate(batch_items):
+        for batch_offset, item in enumerate(items[batch_start : batch_start + args.batch_size]):
             local_index = batch_start + batch_offset
             index = args.offset + local_index
             out_path = output_dir / f"{args.split_name}_{index:06d}.pt"
@@ -339,7 +335,6 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
                     raise
 
         if not prepared:
-            batch_start += len(batch_items)
             continue
         with torch.inference_mode():
             results = infer_prepared(prepared)
@@ -390,7 +385,6 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
                     progress.close()
                     raise result
             progress.update(1)
-        batch_start += len(batch_items)
     progress.close()
 
     return {
@@ -401,7 +395,6 @@ def export_dumps(args: argparse.Namespace) -> dict[str, Any]:
         "offset": args.offset,
         "limit": args.limit,
         "batch_size": args.batch_size,
-        "effective_batch_size": adaptive_batch_size,
         "num_batch_calls": batch_calls,
         "num_batch_splits": batch_splits,
         "num_single_retries": single_retries,
