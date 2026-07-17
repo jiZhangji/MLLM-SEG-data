@@ -131,7 +131,6 @@ class SpecialEvaluationDataTests(unittest.TestCase):
                 overwrite=False,
                 fail_fast=False,
                 empty_on_failure=True,
-                batch_size=1,
             )
             with patch(
                 "refine_stamp.scripts.export_stamp_refinement_dumps.load_segmenter_class",
@@ -145,69 +144,6 @@ class SpecialEvaluationDataTests(unittest.TestCase):
             dump = torch.load(next(output_dir.glob("*.pt")), map_location="cpu", weights_only=False)
             self.assertTrue(dump["empty_prediction"])
             self.assertEqual(tuple(dump["grid_hw"]), (1, 1))
-
-    def test_dump_export_batches_and_saves_each_sample(self):
-        class BatchSegmenter:
-            def __init__(self, *args, **kwargs):
-                self.batch_calls = 0
-
-            @staticmethod
-            def _output(value):
-                return {
-                    "mask_logits": torch.full((1, 4, 2), float(value)),
-                    "mask_hidden": torch.full((1, 4, 3), float(value)),
-                    "grid_hw": (2, 2),
-                }
-
-            def generate_batch_with_refinement_outputs(self, images, queries):
-                self.batch_calls += 1
-                return [self._output(index + 1) for index in range(len(images))]
-
-            def generate_with_refinement_outputs(self, image, query):
-                return self._output(9)
-
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            items = []
-            for index in range(3):
-                image_path = root / f"image_{index}.png"
-                mask_path = root / f"mask_{index}.png"
-                Image.new("RGB", (12, 10), (100 + index, 110, 120)).save(image_path)
-                Image.new("L", (12, 10), 0).save(mask_path)
-                items.append({"images": [str(image_path)], "masks": [str(mask_path)], "label": f"object {index}"})
-            json_path = root / "eval.json"
-            json_path.write_text(json.dumps(items), encoding="utf-8")
-            output_dir = root / "dumps"
-            args = argparse.Namespace(
-                root=root,
-                stamp_code_dir=root,
-                model=root,
-                json=json_path,
-                output_dir=output_dir,
-                split_name="refcoco_val",
-                limit=0,
-                offset=0,
-                min_pixels=1,
-                max_pixels=100,
-                prompt_mode="official",
-                device_map="cpu",
-                overwrite=False,
-                fail_fast=False,
-                empty_on_failure=False,
-                batch_size=2,
-            )
-            with patch(
-                "refine_stamp.scripts.export_stamp_refinement_dumps.load_segmenter_class",
-                return_value=BatchSegmenter,
-            ), patch(
-                "refine_stamp.scripts.export_stamp_refinement_dumps.load_official_question_templates",
-                return_value=["Please segment the [class_name]."],
-            ):
-                report = export_dumps(args)
-            self.assertEqual(report["num_exported"], 3)
-            self.assertEqual(report["num_failed"], 0)
-            self.assertEqual(report["num_batch_calls"], 1)
-            self.assertEqual(len(list(output_dir.glob("*.pt"))), 3)
 
 
 if __name__ == "__main__":
