@@ -25,6 +25,7 @@ class OnePass7BOutput:
     mask_logits: list[torch.Tensor]
     raw_mask_logits: list[torch.Tensor]
     seg_logits: list[torch.Tensor] | None
+    mask_hidden: list[torch.Tensor]
     grid_shapes: list[tuple[int, int]]
     seg_hidden: torch.Tensor
 
@@ -220,6 +221,22 @@ class OnePassQwen7B(nn.Module):
             return 0.0
         return float(self.seg_grounding_head.fusion_alpha().detach().item())
 
+    def logits_for_seg_hidden(
+        self,
+        raw_mask_logits: list[torch.Tensor],
+        mask_hidden: list[torch.Tensor],
+        seg_hidden: torch.Tensor,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        """Recompute only the explicit SEG-grounding branch for diagnostics."""
+        if self.seg_grounding_head is None:
+            raise RuntimeError("SEG-grounding diagnostics require a SEG grounding head.")
+        if len(raw_mask_logits) != len(mask_hidden):
+            raise ValueError("Raw-logit and MASK-hidden group counts do not match.")
+        seg_logits = self.seg_grounding_head(seg_hidden, mask_hidden)
+        alpha = self.seg_grounding_head.fusion_alpha()
+        mask_logits = [raw + alpha * seg for raw, seg in zip(raw_mask_logits, seg_logits)]
+        return mask_logits, seg_logits
+
     def trainable_parameters(self) -> list[nn.Parameter]:
         return [parameter for parameter in self.parameters() if parameter.requires_grad]
 
@@ -254,7 +271,11 @@ class OnePassQwen7B(nn.Module):
         attention_mask: torch.Tensor,
         pixel_values: torch.Tensor,
         image_grid_thw: torch.Tensor,
+        disable_seg_query: bool = False,
+        seg_query_targets: list[torch.Tensor] | None = None,
     ) -> OnePass7BOutput:
+        if disable_seg_query and seg_query_targets is not None:
+            raise ValueError("disable_seg_query and seg_query_targets cannot be used together.")
         seg_positions = input_ids.eq(self.seg_token_id) & attention_mask.bool()
         mask_positions = input_ids.eq(self.mask_token_id) & attention_mask.bool()
         seg_counts = seg_positions.sum(dim=1)
@@ -282,16 +303,44 @@ class OnePassQwen7B(nn.Module):
                 f"Merged image feature count {image_features.shape[0]} does not match "
                 f"mask-query count {int(expected.sum().item())}."
             )
-        inputs_embeds[seg_positions] = self.query_builder.seg_embedding.to(inputs_embeds.dtype)
+        if disable_seg_query:
+            inputs_embeds[seg_positions] = 0
+        elif seg_query_targets is not None:
+            if len(seg_query_targets) != input_ids.shape[0]:
+                raise ValueError(
+                    f"Received {len(seg_query_targets)} SEG targets for batch size {input_ids.shape[0]}."
+                )
+            image_groups = image_features.split(expected.tolist())
+            prototypes = []
+            for features, target in zip(image_groups, seg_query_targets):
+                weights = target.to(device=features.device, dtype=torch.float32).reshape(-1)
+                if weights.numel() != features.shape[0]:
+                    raise ValueError(
+                        f"SEG target length {weights.numel()} does not match "
+                        f"visual feature count {features.shape[0]}."
+                    )
+                denominator = weights.sum()
+                if denominator <= 0:
+                    raise ValueError("GT foreground prototype has zero foreground weight.")
+                prototype = (features.float() * weights.unsqueeze(-1)).sum(dim=0) / denominator
+                prototypes.append(prototype)
+            inputs_embeds[seg_positions] = torch.stack(prototypes).to(inputs_embeds)
+        else:
+            inputs_embeds[seg_positions] = self.query_builder.seg_embedding.to(inputs_embeds.dtype)
         spatial_queries = self.query_builder.spatial_queries(
             image_features, grid_shapes, output_dtype=inputs_embeds.dtype
         )
         inputs_embeds[mask_positions] = spatial_queries
 
+        model_attention_mask = attention_mask
+        if disable_seg_query:
+            model_attention_mask = attention_mask.clone()
+            model_attention_mask[seg_positions] = 0
+
         outputs = self.backbone.model(
             input_ids=input_ids,
             inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
+            attention_mask=model_attention_mask,
             pixel_values=None,
             image_grid_thw=image_grid_thw,
             seg_mask=mask_positions,
@@ -307,14 +356,15 @@ class OnePassQwen7B(nn.Module):
         seg_hidden = hidden[seg_positions].reshape(input_ids.shape[0], -1)
         seg_logits = None
         mask_logits = raw_mask_logits
-        if self.seg_grounding_head is not None:
-            seg_logits = self.seg_grounding_head(seg_hidden, mask_hidden)
-            alpha = self.seg_grounding_head.fusion_alpha()
-            mask_logits = [raw + alpha * seg for raw, seg in zip(raw_mask_logits, seg_logits)]
+        if self.seg_grounding_head is not None and not disable_seg_query:
+            mask_logits, seg_logits = self.logits_for_seg_hidden(
+                raw_mask_logits, mask_hidden, seg_hidden
+            )
         return OnePass7BOutput(
             mask_logits=mask_logits,
             raw_mask_logits=raw_mask_logits,
             seg_logits=seg_logits,
+            mask_hidden=mask_hidden,
             grid_shapes=grid_shapes,
             seg_hidden=seg_hidden,
         )

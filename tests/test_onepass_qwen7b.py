@@ -57,6 +57,7 @@ class FakeCore(nn.Module):
         self.embedding = nn.Embedding(32, hidden_size)
         self.q_proj = nn.Linear(hidden_size, hidden_size)
         self.last_seg_mask = None
+        self.last_attention_mask = None
 
     def get_input_embeddings(self):
         return self.embedding
@@ -70,8 +71,8 @@ class FakeCore(nn.Module):
         return input_ids.eq(7).unsqueeze(-1).expand_as(inputs_embeds), None
 
     def forward(self, inputs_embeds, seg_mask, **kwargs):
-        del kwargs
         self.last_seg_mask = seg_mask
+        self.last_attention_mask = kwargs.get("attention_mask")
         projected = self.q_proj(inputs_embeds)
         return SimpleNamespace(last_hidden_state=projected + projected.mean(dim=1, keepdim=True))
 
@@ -174,6 +175,61 @@ class OnePassQwen7BTests(unittest.TestCase):
         self.assertIsNotNone(model.seg_grounding_head.mask_projection.weight.grad)
         self.assertIsNotNone(model.seg_grounding_head.fusion_weight.grad)
         self.assertIsNotNone(model.query_builder.seg_embedding.grad)
+
+    def test_seg_diagnostic_forward_controls(self):
+        backbone = FakeBackbone()
+        inject_lora(backbone.model, rank=2, alpha=4.0, dropout=0.0, target_names=("q_proj",))
+        model = OnePassQwen7B(
+            backbone,
+            seg_token_id=5,
+            mask_token_id=6,
+            merge_size=2,
+            use_seg_grounding=True,
+            seg_grounding_size=2,
+        )
+        input_ids = torch.tensor([[7, 7, 5, 6, 6], [7, 7, 5, 6, 6]])
+        attention_mask = torch.ones_like(input_ids)
+        image_grid_thw = torch.tensor([[1, 2, 4], [1, 2, 4]])
+        baseline = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            pixel_values=torch.zeros(16, 3),
+            image_grid_thw=image_grid_thw,
+        )
+        self.assertEqual(len(baseline.mask_hidden), 2)
+        shuffled_logits, shuffled_seg_logits = model.logits_for_seg_hidden(
+            baseline.raw_mask_logits,
+            baseline.mask_hidden,
+            baseline.seg_hidden.roll(shifts=1, dims=0),
+        )
+        self.assertEqual(len(shuffled_logits), 2)
+        self.assertEqual(len(shuffled_seg_logits), 2)
+
+        no_seg = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            pixel_values=torch.zeros(16, 3),
+            image_grid_thw=image_grid_thw,
+            disable_seg_query=True,
+        )
+        self.assertIsNone(no_seg.seg_logits)
+        self.assertTrue(torch.equal(no_seg.mask_logits[0], no_seg.raw_mask_logits[0]))
+        self.assertTrue(
+            torch.equal(
+                backbone.model.last_attention_mask[:, 2],
+                torch.zeros(2, dtype=torch.long),
+            )
+        )
+
+        oracle = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            pixel_values=torch.zeros(16, 3),
+            image_grid_thw=image_grid_thw,
+            seg_query_targets=[torch.tensor([1.0, 0.0]), torch.tensor([0.0, 1.0])],
+        )
+        self.assertEqual(len(oracle.mask_logits), 2)
+        self.assertIsNotNone(oracle.seg_logits)
 
     def test_checkpoint_round_trip(self):
         backbone = FakeBackbone()
