@@ -1,0 +1,628 @@
+OnePass-7B 当前方案、性能结果与 SEG 诊断实验总结
+=====================================================
+
+整理日期：2026-07-18
+
+
+一、文档目的
+============
+
+本文档聚焦于当前最新的 OnePass Qwen2-VL-7B 方案，也就是：
+
+1. 使用 STAMP-7B LoRA 参数对 OnePass 进行热启动。
+2. 保留一次 Transformer 前向的 OnePass 推理方式。
+3. 在 OnePass 中增加 SEG-grounding 分支。
+4. 对 h_SEG 是否真正参与最终 mask 预测进行三项诊断实验。
+
+文档记录当前实现、训练方式、完整结果、可以得出的结论、
+不能过度解读的部分，以及下一版结构应该如何修改。
+
+
+二、研究动机
+============
+
+STAMP 使用两阶段推理：
+
+图像 + 文本
+    |
+    v
+自回归生成语义回答与 <SEG>
+    |
+    v
+获得与当前图像和指令相关的 h_SEG
+    |
+    v
+h_SEG + 空间 MASK tokens
+    |
+    v
+Hybrid Attention + mask classifier
+    |
+    v
+最终 mask
+
+这种方式的优点是 h_SEG 具有明确的目标语义，缺点是推理需要
+自回归生成以及后续 mask 分类，速度较慢。
+
+OnePass 的目标是将这个过程改为：
+
+图像 + 文本 + 预先插入的 SEG/MASK queries
+    |
+    v
+一次 Transformer 前向
+    |
+    v
+直接预测 mask
+
+核心研究问题是：
+
+在不执行自回归 generate() 的条件下，能否使用一个预先插入、
+经过上下文化的 SEG 查询表示当前文本指向的目标，并让它指导
+所有空间 MASK queries 完成指代分割。
+
+
+三、当前 OnePass-7B 的输入设计
+=============================
+
+3.1 完整输入序列
+----------------
+
+当前输入序列为：
+
+X = [V_1, ..., V_P, T_1, ..., T_L, e_SEG, M_1, ..., M_P]
+
+其中：
+
+V_i：图像经 Qwen2-VL vision encoder 和 merge 之后的第 i 个视觉 token。
+T_i：文本指令 token。
+e_SEG：可学习的任务级 SEG 查询向量。
+M_i：与第 i 个合并后图像 token 对齐的空间 MASK query。
+P：合并后图像 token 数量，同时也是 MASK query 数量。
+
+
+3.2 MASK query 构造
+------------------
+
+每个空间 MASK query 按下式构造：
+
+M_i = E_MASK + W_V(V_i) + Row_i + Col_i
+
+其中：
+
+E_MASK：所有空间位置共享的可学习 MASK embedding。
+W_V(V_i)：第 i 个视觉 token 的线性投影。
+Row_i：第 i 个空间位置的行位置编码。
+Col_i：第 i 个空间位置的列位置编码。
+
+这个设计使每个 MASK query 同时包含：
+
+1. MASK 任务身份。
+2. 当前位置的局部视觉特征。
+3. 当前位置的二维坐标。
+
+
+3.3 Attention 设计
+----------------
+
+当前 OnePass 复用 STAMP 的 Hybrid Attention 思路：
+
+1. 图像和文本 token 按多模态大模型的方式进行上下文建模。
+2. SEG 查询可以读取前面的图像和文本信息。
+3. MASK queries 可以读取图像、文本和 SEG 信息。
+4. MASK queries 之间可以进行空间交互，而不是完全独立分类。
+
+经 Transformer 后得到：
+
+h_SEG = Transformer 在 SEG 位置的输出。
+h_MASK_i = Transformer 在第 i 个 MASK 位置的输出。
+
+
+四、当前 SEG-grounding 设计
+=========================
+
+4.1 Raw MASK 分支
+----------------
+
+基础 mask logits 由 MASK hidden state 经线性分类器得到：
+
+raw_logit_i = Classifier(h_MASK_i)
+
+这条分支不需要显式使用 h_SEG，是当前模型的主要预测路径。
+
+
+4.2 SEG-grounding 分支
+----------------------
+
+首先投影并归一化 SEG 和 MASK hidden states：
+
+q = normalize(W_SEG(h_SEG))
+k_i = normalize(W_MASK(h_MASK_i))
+
+然后计算相似度：
+
+seg_logit_i = scale * dot(k_i, q)
+
+这个分支的目标是使 h_SEG 与属于目标的 MASK hidden state 相似，
+与背景位置的 MASK hidden state 不相似。
+
+
+4.3 当前融合公式
+----------------
+
+当前最终 logits 为：
+
+final_logit_i = raw_logit_i + tanh(alpha) * seg_logit_i
+
+alpha 是一个可学习标量。
+
+这个设计原本希望实现：
+
+1. 保留原有 raw MASK 分支的稳定性。
+2. 让 SEG 分支学习增量式目标语义修正。
+3. 在初始 alpha = 0 时不破坏父 checkpoint 的输出。
+
+但实验表明，这也给了模型一条非常容易的退化路径：
+只需将 alpha 维持在接近 0，就可以完全忽略 SEG 分支。
+
+
+五、当前训练方式
+==================
+
+5.1 初始化
+----------
+
+当前版本不是从 Qwen2-VL-7B 完全随机初始化 OnePass LoRA，
+而是从已经训练好的 OnePass + STAMP LoRA warm-start checkpoint 继续微调。
+
+初始化内容主要包括：
+
+1. Qwen2-VL-7B 基础模型。
+2. STAMP-7B 学到的 LoRA 参数。
+3. 已训练的 OnePass SEG/MASK query builder。
+4. 已训练的 raw mask classifier。
+5. 新增的 SEG-grounding projection 和 fusion alpha。
+
+
+5.2 可训练参数
+--------------
+
+当前训练主要更新：
+
+1. OnePass 的 e_SEG 和 E_MASK。
+2. 视觉投影和二维位置编码。
+3. MASK classifier。
+4. Qwen2-VL 中注入的 LoRA 参数。
+5. SEG projection。
+6. MASK projection。
+7. SEG-grounding logit scale。
+8. fusion alpha。
+
+主干原始 Qwen2-VL 参数保持冻结。
+
+
+5.3 损失函数
+------------
+
+当前主 mask 损失为：
+
+L_mask = 0.3 * BCE(final_logits, GT) + 0.7 * Dice(final_logits, GT)
+
+SEG-grounding 辅助损失为：
+
+L_SEG = 0.3 * BCE(seg_logits, GT) + 0.7 * Dice(seg_logits, GT)
+
+总损失为：
+
+L = L_mask + 0.1 * L_SEG
+
+这个设计确实给 seg_logits 提供了 mask 监督，但它没有强制
+final_logits 必须使用 seg_logits。
+
+
+六、当前完整 val/test 结果
+==========================
+
+6.1 RefCOCOg val
+----------------
+
+样本数：4896
+
+mean IoU / gIoU：0.5899042909，即 58.9904
+cIoU：0.5998282080，即 59.9828
+
+raw branch mean IoU：0.5899037293
+raw branch cIoU：0.5998277520
+
+SEG branch mean IoU：0.5895558981
+SEG branch cIoU：0.5995648269
+
+每样本纯模型推理时间：约 0.2030 秒
+每样本端到端时间：约 0.2487 秒
+自回归 generate() 调用数：0
+
+
+6.2 RefCOCOg test
+-----------------
+
+样本数：9602
+
+mean IoU / gIoU：0.5909843183，即 59.0984
+cIoU：0.6061370695，即 60.6137
+
+raw branch mean IoU：0.5909836901
+raw branch cIoU：0.6061366124
+
+SEG branch mean IoU：0.5905960711
+SEG branch cIoU：0.6057530689
+
+每样本纯模型推理时间：约 0.2028 秒
+每样本端到端时间：约 0.2492 秒
+自回归 generate() 调用数：0
+
+
+6.3 融合参数
+------------
+
+训练后：
+
+seg_fusion_alpha = -0.0012738527
+
+即：
+
+tanh(alpha) 约等于 -0.00127
+
+因此当前最终预测几乎完全等于 raw MASK branch。
+
+
+七、三项 SEG 诊断实验
+=====================
+
+为了检查当前模型是否真正使用 h_SEG，在同一 checkpoint 上完成了
+三项诊断实验。
+
+
+7.1 Baseline
+------------
+
+不修改任何输入和前向路径，使用 checkpoint 的原始输出。
+
+
+7.2 SEG shuffle
+---------------
+
+将同一 batch 中的上下文 h_SEG 循环移位，让每个样本的
+SEG-grounding head 收到其他样本的 h_SEG。
+
+重要限定：
+
+这项实验打乱的是 Transformer 输出后用于显式 grounding head 的 h_SEG。
+它不是在 Transformer 的每一层中交换 SEG hidden state。
+因此这项实验主要诊断显式 SEG-grounding 融合分支。
+
+
+7.3 No-SEG
+----------
+
+将输入 SEG embedding 置零，并在 attention mask 中屏蔽 SEG token，
+使后续 MASK queries 无法将它作为 key/value 读取。
+
+该设置输出不经过 SEG fusion 的 raw MASK logits。
+
+由于已训练 alpha 本身接近 0，关闭 fusion 带来的额外影响极小，
+所以这项实验主要用来检查 Transformer 内部的 MASK queries 是否依赖 SEG token。
+
+
+7.4 GT foreground oracle
+------------------------
+
+将 GT mask 用 area interpolation 下采样到视觉 token grid，然后计算：
+
+p_fg = sum_i(weight_i * V_i) / sum_i(weight_i)
+
+用 GT 前景视觉原型 p_fg 替换输入的 e_SEG，再完成一次 Transformer 前向。
+
+重要限定：
+
+当前模型并没有在训练期间学习如何解释“GT 前景视觉原型作为 SEG 输入”。
+因此它是对当前语义通道可用性的干预实验，不是理论上最优性能的严格上界。
+
+
+八、诊断实验数值结果
+====================
+
+8.1 RefCOCOg val
+----------------
+
+方法                    gIoU       cIoU       Delta gIoU    Delta cIoU
+Baseline               0.589904   0.599828   +0.000000     +0.000000
+SEG shuffle            0.589904   0.599828   -0.000000     +0.000000
+No-SEG                 0.590298   0.600171   +0.000393     +0.000343
+GT foreground oracle   0.590290   0.600070   +0.000386     +0.000242
+
+换算为百分点：
+
+SEG shuffle：cIoU 变化 0.0000 个点。
+No-SEG：cIoU 提升约 0.0343 个点。
+GT foreground oracle：cIoU 提升约 0.0242 个点。
+
+
+8.2 RefCOCOg test
+-----------------
+
+方法                    gIoU       cIoU       Delta gIoU    Delta cIoU
+Baseline               0.590984   0.606137   +0.000000     +0.000000
+SEG shuffle            0.590984   0.606137   +0.000000     +0.000000
+No-SEG                 0.591124   0.606297   +0.000140     +0.000160
+GT foreground oracle   0.591254   0.606425   +0.000269     +0.000288
+
+换算为百分点：
+
+SEG shuffle：cIoU 变化 0.0000 个点。
+No-SEG：cIoU 提升约 0.0160 个点。
+GT foreground oracle：cIoU 提升约 0.0288 个点。
+
+上述变化都非常小，在方法性能分析上应视为“基本没有变化”，
+不应将 0.01--0.03 个 cIoU 点的差异解读为有意义的性能提升。
+
+
+九、诊断实验得出的主要结论
+============================
+
+9.1 显式 SEG-grounding 分支基本没有参与最终预测
+---------------------------------------------------
+
+SEG shuffle 对 val 和 test 均没有产生可观察变化。
+
+结合 alpha 约为 -0.00127，可以确定：
+
+当前 final logits 并不依赖正确的 h_SEG，SEG-grounding 分支已被融合系数关闭。
+
+
+9.2 Transformer 内部的 MASK queries 也没有显著依赖 SEG token
+---------------------------------------------------------
+
+屏蔽 SEG token 后，val/test 性能不降反而略微上升。
+
+这表明当前模型的 MASK queries 主要依靠：
+
+1. 每个 MASK query 中自带的局部视觉特征。
+2. Transformer 中对文本 token 的直接读取。
+3. MASK queries 之间的 Hybrid Attention 空间交互。
+4. 最后的 raw mask classifier。
+
+它没有形成“先将目标语义汇总到 h_SEG，再由 h_SEG 指导 MASK”的强计算路径。
+
+
+9.3 当前问题不仅是 h_SEG 内容不够好
+---------------------------------------
+
+即使使用 GT 前景区域构建的视觉原型替换 e_SEG，性能仍几乎不变。
+
+这不是证明目标语义无用，而是证明：
+
+当前模型没有学会一条将 SEG 位置中的目标语义稳定传递到
+空间 MASK logits 的路径。
+
+
+9.4 当前 OnePass 实际退化为直接 MASK-query classifier
+-------------------------------------------------
+
+期望的路径是：
+
+图像 + 文本 -> h_SEG -> h_MASK -> mask
+
+当前实际路径更接近：
+
+图像 + 文本 + 空间 MASK queries -> h_MASK -> classifier -> mask
+
+SEG token 在当前 checkpoint 中更接近一个可以被忽略的辅助 token，
+而不是一个不可绕过的目标语义瓶颈。
+
+
+十、与其他 7B 实验的比较
+=========================
+
+方法                                  val gIoU   val cIoU   test gIoU  test cIoU
+OnePass-7B，Qwen 初始化              58.6179    59.8185    58.3014    59.6382
+OnePass-7B，STAMP LoRA warm-start         58.5672    59.5585    58.8233    60.2011
+OnePass-7B，SEG grounding（当前）      58.9904    59.9828    59.0984    60.6137
+公平复现 STAMP-7B                    61.2843    63.6411    61.3864    64.0454
+
+当前 SEG-grounding OnePass 相比公平复现 STAMP：
+
+val gIoU 低约 2.2939 个点。
+val cIoU 低约 3.6583 个点。
+test gIoU 低约 2.2880 个点。
+test cIoU 低约 3.4317 个点。
+
+使用 GT foreground oracle 后仍然落后：
+
+val cIoU：60.0070 vs 63.6411，低约 3.6341 个点。
+test cIoU：60.6425 vs 64.0454，低约 3.4029 个点。
+
+
+十一、为什么当前损失会导致这种结果
+====================================
+
+最终 mask loss 只关心预测 mask 是否正确，并不关心模型是否通过 h_SEG
+完成预测。
+
+由于 M_i 已经直接包含 V_i，raw MASK 分支存在一条更容易优化的捷径：
+
+M_i 自带视觉特征
+    |
+    v
+MASK queries 直接读文本和相互交互
+    |
+    v
+raw classifier 完成分割
+
+而 SEG 分支需要额外学会：
+
+1. h_SEG 如何表示当前指令中的目标。
+2. h_MASK_i 如何表示第 i 个空间位置。
+3. 两者的相似度如何对应前景概率。
+4. 如何通过 alpha 影响最终输出。
+
+当 raw 捷径已经能够降低损失时，最简单的优化结果就是忽略 SEG 分支。
+
+
+十二、不建议继续做的事情
+========================
+
+1. 不建议仅对当前 checkpoint 继续增加 epoch。
+   当前结构中 SEG 路径已被学习为接近关闭，延长同样的训练
+   不会自动建立强 SEG -> MASK 依赖。
+
+2. 不建议只增大 L_SEG 的权重。
+   这可能让 seg_logits 自身更好，但只要 final logits 仍有可收缩到 0 的 alpha，
+   最终分支仍可以忽略它。
+
+3. 不建议将 GT oracle 没有提升解读为“h_SEG 语义无用”。
+   当前模型从未针对 GT 视觉原型 SEG 输入进行训练，并且通道已被忽略。
+
+4. 不建议重新回到使用 STAMP 最终 mask_logits 作为输入的后处理方案。
+   那样会回到 STAMP 推理完成后再修正的范式，不再是真正的 OnePass。
+
+
+十三、下一版 OnePass V4 的建议设计
+================================
+
+下一版的核心不是只让 h_SEG “更好”，而是让它成为最终 mask 预测中
+不可绕过的条件。
+
+
+13.1 显式目标条件分类
+----------------------
+
+q = normalize(W_SEG(h_SEG))
+k_i = normalize(W_MASK(h_MASK_i))
+
+semantic_logit_i = dot(q, k_i) / temperature
+local_logit_i = Classifier(h_MASK_i)
+
+final_logit_i = local_logit_i + semantic_logit_i
+
+第一阶段不再使用可以自由收缩到 0 的 alpha。
+可以先将语义分支权重固定为 1，等模型确实学会使用 h_SEG 后
+再讨论可学习、有正值下界约束的融合权重。
+
+
+13.2 语义分支独立 mask 监督
+---------------------------
+
+L_final = MaskLoss(final_logits, GT)
+L_semantic = MaskLoss(semantic_logits, GT)
+
+这样 semantic logits 必须独立学会目标定位，不能仅作为一个
+可以被 raw branch 覆盖的微小残差。
+
+
+13.3 前景原型对比监督
+----------------------
+
+训练时根据 GT mask 从视觉 tokens 中构建：
+
+p_fg = GT 前景区域视觉 token 的加权平均。
+p_bg = GT 背景区域视觉 token 的加权平均。
+
+使用对比损失强制：
+
+h_SEG 接近 p_fg。
+h_SEG 远离 p_bg。
+h_SEG 远离 batch 内其他样本的 p_fg。
+
+建议损失为：
+
+L = L_final + 0.5 * L_semantic + 0.1 * L_contrast
+
+
+13.4 建议的分阶段训练
+----------------------
+
+阶段 A：
+
+1. 冻结大部分 backbone 和 raw classifier。
+2. 训练 e_SEG、SEG projection、MASK projection 和语义分支。
+3. 使 semantic logits 首先能够独立进行前景预测。
+
+阶段 B：
+
+1. 解冻 OnePass LoRA、query builder 和 classifier。
+2. 使用 L_final + L_semantic + L_contrast 联合训练。
+3. 保持语义分支对 final logits 的固定非零影响。
+
+
+十四、V4 应该先达到的诊断标准
+================================
+
+不建议立即全量训练 V4。先使用 5000--10000 个样本进行小规模验证。
+
+成功标准不仅是 cIoU 上升，还应该包括：
+
+1. SEG shuffle 应导致明显性能下降。
+2. No-SEG 应导致明显性能下降。
+3. GT foreground oracle 应该比正常 h_SEG 更好，或至少不更差。
+4. semantic-only logits 应该具有独立的分割能力。
+5. h_SEG 与正确前景原型的相似度应明显高于背景和负样本。
+
+初步可将“SEG shuffle 或 No-SEG 导致 cIoU 至少下降 1 个点”
+作为模型真正使用 h_SEG 的较强证据。
+
+
+十五、代码和结果位置
+=====================
+
+当前 OnePass-7B 模型：
+
+MLLM-SEG-data/onepass_qwen7b/model.py
+
+当前 OnePass-7B 训练：
+
+MLLM-SEG-data/onepass_qwen7b/train.py
+
+当前 OnePass-7B 常规评估：
+
+MLLM-SEG-data/onepass_qwen7b/eval.py
+
+SEG 诊断评估：
+
+MLLM-SEG-data/onepass_qwen7b/diagnose_seg.py
+
+val/test 诊断汇总：
+
+MLLM-SEG-data/onepass_qwen7b/summarize_seg_diagnostics.py
+
+双卡诊断总控脚本：
+
+MLLM-SEG-data/run_onepass7b_seg_diagnostics.sh
+
+服务器诊断结果：
+
+outputs/onepass7b_seg_diagnostics_full/seg_diagnostics_val_test.md
+outputs/onepass7b_seg_diagnostics_full/seg_diagnostics_val_test.json
+outputs/onepass7b_seg_diagnostics_full/val/seg_diagnostic_rows.csv
+outputs/onepass7b_seg_diagnostics_full/test/seg_diagnostic_rows.csv
+
+
+十六、最终结论
+================
+
+当前 SEG-grounding OnePass-7B 保持了严格的一次 Transformer 前向推理，
+不调用自回归 generate()，并且在速度上明显快于两阶段 STAMP。
+
+但是，三项诊断实验一致表明：
+
+1. 打乱 h_SEG 不会降低性能。
+2. 完全屏蔽 SEG token 不会降低性能。
+3. 用 GT 前景视觉原型替换 SEG 输入也几乎不改变性能。
+4. 已训练 fusion alpha 接近 0。
+5. final logits 与 raw MASK logits 几乎完全相同。
+
+因此，当前模型实际上是一个“图像+文本+空间 MASK queries”的
+直接分割模型，而不是一个强依赖目标级 h_SEG 的 OnePass 分割模型。
+
+与公平复现 STAMP-7B 相比，当前 test cIoU 仍落后约 3.43 个点。
+
+下一步的重点不应是对当前结构简单增加 epoch，而应该修改计算路径和监督方式，
+使 h_SEG 成为最终 mask 预测中不可绕过的目标条件。
+
