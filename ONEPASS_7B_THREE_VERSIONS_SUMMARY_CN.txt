@@ -1,0 +1,758 @@
+OnePass-7B 三个版本的设计、实现、训练与实验结果总结
+=====================================================
+
+整理日期：2026-07-18
+
+
+一、研究目标
+============
+
+本组实验希望在保留多模态大模型语义理解能力的同时，将 STAMP 原本依赖
+“生成 <SEG> 后再次执行 MASK 分类”的两阶段推理，改造成一次 Transformer
+前向即可完成的指代分割方法。
+
+核心目标包括：
+
+1. 不执行 autoregressive generate()。
+2. 不先运行一次完整 STAMP 再修正其输出。
+3. 在输入序列中预先放置一个目标级 SEG 查询和与图像 token 数量相同的
+   空间 MASK 查询。
+4. 使用 STAMP 的 Hybrid Attention，使所有 MASK 查询能够同时进行空间交互。
+5. 通过一次前向直接输出 token-grid mask。
+6. 尽量缩小 OnePass 与两阶段 STAMP 之间的精度差距。
+
+
+二、统一实验设置
+================
+
+2.1 数据
+--------
+
+训练数据：
+
+  RefCOCOg 全量训练 JSON
+  refcocog_formatted_all_sentences_doubled_mp.json
+  训练记录数：80,512
+
+评估数据：
+
+  RefCOCOg val：4,896 条
+  RefCOCOg test：9,602 条
+
+三个 OnePass 版本均在相同训练集和相同官方 val/test JSON 上评估。
+
+
+2.2 基础模型
+------------
+
+基础模型：Qwen2-VL-7B-Instruct
+
+路径：
+
+  models/Qwen2-VL-7B-Instruct
+
+参数高效微调配置：
+
+  LoRA rank：64
+  LoRA alpha：128
+  LoRA dropout：0.05
+  RS-LoRA：启用
+  LoRA target modules：
+    q_proj
+    k_proj
+    v_proj
+    o_proj
+    gate_proj
+    up_proj
+    down_proj
+
+训练中冻结 Qwen2-VL 原始大部分参数，训练 LoRA、OnePass 查询模块和 mask
+分类器。视觉编码器继续使用预训练参数。
+
+
+2.3 OnePass 输入结构
+-------------------
+
+完整输入形式：
+
+  X = [V_1:P, T_1:L, e_SEG, M_1:P]
+
+其中：
+
+  V_1:P   ：经过视觉编码器并 merge 后的图像 token；
+  T_1:L   ：指代文本 token；
+  e_SEG   ：单个可学习的目标级语义查询；
+  M_1:P   ：与 merged image token 数量严格一致的空间 MASK 查询。
+
+每个空间 MASK 查询的构造方式：
+
+  M_i = E_MASK + W_v V_i + Row_i + Col_i
+
+其中：
+
+  E_MASK  ：所有空间位置共享的可学习 MASK embedding；
+  W_v V_i ：该位置对应的视觉内容；
+  Row_i   ：二维行位置 embedding；
+  Col_i   ：二维列位置 embedding。
+
+初始化：
+
+  W_v 使用单位矩阵初始化；
+  Row/Col embedding 使用 0 初始化；
+  e_SEG 和 E_MASK 在最初版本中使用基础语言 embedding 的语义平均初始化。
+
+
+2.4 注意力与推理方式
+-------------------
+
+使用 STAMP 源代码中的 Hybrid Attention：
+
+1. 图像、文本和 SEG 前缀维持因果关系。
+2. 每个 MASK 查询能够看到完整的图像、文本、SEG 前缀。
+3. 所有 MASK 查询之间允许双向交互。
+
+最终使用共享 scalar classifier 对每个 MASK hidden state 分类：
+
+  raw_logit_i = classifier(h_MASK_i)
+
+随后将 token-grid logits 双线性插值到原始 GT mask 尺寸，阈值 0.5 得到预测。
+
+三个 OnePass 版本的推理均满足：
+
+  Transformer 模型调用：每个 batch 一次
+  autoregressive_generate_calls：0
+
+
+2.5 基础分割损失
+----------------
+
+  L_mask = 0.3 * L_BCE + 0.7 * L_Dice
+
+该设置与本次公平复现 STAMP-7B 所使用的 mask loss 权重一致。
+
+
+三、版本一：从 Qwen2-VL-7B 重新训练 OnePass
+==========================================
+
+3.1 实验目的
+------------
+
+建立不使用任何 STAMP 已训练分割参数的公平 OnePass 基线，验证一次前向的
+OnePass 结构能否仅依赖 Qwen2-VL-7B 和 RefCOCOg 数据学会指代分割。
+
+
+3.2 初始化方式
+------------
+
+使用：
+
+  Qwen2-VL-7B-Instruct 基础模型参数；
+  新添加的 <|seg|> 和 <|mask|> token；
+  新初始化的 e_SEG、E_MASK；
+  新初始化的 row/column embeddings；
+  新初始化的 scalar mask classifier；
+  新注入的 LoRA。
+
+不使用：
+
+  STAMP-7B LoRA；
+  STAMP classifier；
+  STAMP 特殊 token embedding；
+  STAMP 生成的 SEG hidden state；
+  STAMP 第二阶段输出。
+
+
+3.3 训练配置
+------------
+
+  epoch：2
+  GPU：2 张
+  每卡 micro batch：6
+  gradient accumulation：4
+  有效全局 batch：6 * 2 * 4 = 48
+  query learning rate：3e-5
+  classifier learning rate：3e-5
+  LoRA learning rate：3e-5
+  warmup ratio：0.03
+  weight decay：0
+  max grad norm：1.0
+  dtype：BF16
+  attention implementation：SDPA
+
+
+3.4 实验结果
+------------
+
+  Split     Samples     gIoU       cIoU
+  ------------------------------------------------
+  val       4,896       58.6179    59.8185
+  test      9,602       58.3014    59.6382
+
+
+3.5 结论
+--------
+
+1. OnePass 从普通 Qwen2-VL-7B 初始化也可以学习指代分割。
+2. 不需要 autoregressive SEG generation。
+3. 但该版本与公平复现的两阶段 STAMP-7B 仍有明显精度差距。
+4. 这说明单阶段结构本身可行，但随机初始化的分割查询、分类器和 LoRA 在
+   仅训练两轮时仍然不足。
+
+
+四、版本二：使用 STAMP-7B LoRA warm-start 微调 OnePass
+======================================================
+
+4.1 实验目的
+------------
+
+验证 STAMP 已经学到的图文定位和分割能力能否作为 OnePass 的初始化，降低
+OnePass 从零学习分割的难度。
+
+该方法属于：
+
+  LoRA warm-start / 迁移初始化 / 继续微调
+
+不是简单的模型输出后处理，也不要求先运行 STAMP 推理。
+
+
+4.2 参数加载实现
+----------------
+
+STAMP adapter 路径：
+
+  models/STAMP-7B-lora
+
+该目录本质上包含：
+
+  Qwen2-VL-7B 的 PEFT LoRA 增量；
+  modules_to_save 中的 embed_tokens；
+  modules_to_save 中的 lm_head；
+  modules_to_save 中的 classifier。
+
+本次实际加载到 OnePass 的部分：
+
+1. 所有兼容的 STAMP LoRA A/B tensor；
+2. STAMP scalar mask classifier。
+
+本次没有加载到 OnePass 查询中的部分：
+
+1. STAMP <|seg|> token embedding 没有用于初始化 OnePass e_SEG；
+2. STAMP <|mask|> token embedding 没有用于初始化 OnePass E_MASK；
+3. lm_head 没有用于 OnePass mask 推理。
+
+原因是当前 OnePass 会直接覆盖 SEG/MASK 位置的输入 embedding，并且推理不
+生成文本，因此 lm_head 对主流程不是必需的。但未加载 STAMP 特殊 token
+embedding 也可能限制迁移效果。
+
+实现文件：
+
+  onepass_qwen7b/stamp_adapter.py
+
+实现要点：
+
+1. 读取 adapter_config.json；
+2. 自动采用 STAMP 的 rank、alpha、dropout 和 RS-LoRA 配置；
+3. 将 PEFT 的 lora_A/lora_B 键映射到自定义 OnePassLoRALinear；
+4. 严格检查每一层的名称和 tensor shape；
+5. 只读取所需 safetensors tensor，避免一次性加载整个 6.7GB adapter；
+6. 新 OnePass checkpoint 保存完整 LoRA、query 和 classifier，评估时不再
+   依赖原始 STAMP adapter。
+
+对应提交：
+
+  9022d46 add STAMP LoRA warm start for OnePass 7B
+
+
+4.3 训练配置
+------------
+
+  epoch：2
+  GPU：2 张 H200
+  每卡 micro batch：6
+  gradient accumulation：4
+  有效全局 batch：48
+  query learning rate：3e-5
+  classifier learning rate：3e-5
+  STAMP LoRA learning rate：1e-5
+  L_mask：0.3 BCE + 0.7 Dice
+
+降低 LoRA 学习率的目的是避免快速破坏 STAMP 已学到的参数。
+
+
+4.4 实验结果
+------------
+
+  Split     Samples     gIoU       cIoU
+  ------------------------------------------------
+  val       4,896       58.5672    59.5585
+  test      9,602       58.8233    60.2011
+
+相对版本一：
+
+  val gIoU： -0.05 个百分点
+  val cIoU： -0.26 个百分点
+  test gIoU：+0.52 个百分点
+  test cIoU：+0.56 个百分点
+
+
+4.5 结论
+--------
+
+1. STAMP LoRA 在 test 上有一定正迁移，但在 val 上没有稳定提升。
+2. 仅仅参数 shape 相同，不意味着两种推理结构的参数功能完全相同。
+3. STAMP LoRA 原本适配的是：
+
+     生成 SEG -> 第二阶段 MASK 分类
+
+   OnePass 使用的是：
+
+     预先插入 SEG/MASK -> 一次 Hybrid Attention 前向
+
+4. 两种结构中的 LoRA 所服务的 token 关系不同，因此 warm-start 不能直接
+   消除 OnePass 与 STAMP 的性能差距。
+5. 版本二的 val/test 平均提升非常有限，不能说明 STAMP LoRA 初始化已经
+   解决核心问题。
+
+
+五、版本三：在版本二基础上增加 SEG grounding 监督
+=================================================
+
+5.1 实验动机
+------------
+
+在版本一和版本二中，e_SEG 虽然参与 Transformer 前向，但没有独立损失。
+h_SEG 只通过最终 mask loss 间接接收梯度。
+
+因此提出：
+
+  给 h_SEG 增加直接空间监督，使其学习“当前文本所指目标位于哪些位置”。
+
+
+5.2 模型结构
+------------
+
+保留原始 classifier 分支：
+
+  raw_logits_i = classifier(h_MASK_i)
+
+新增 SEG grounding head：
+
+  z_SEG = W_SEG h_SEG
+  z_MASK_i = W_MASK h_MASK_i
+  seg_logits_i = cosine(z_SEG, z_MASK_i) / temperature
+
+配置：
+
+  SEG projection dimension：256
+  temperature：0.1
+
+最终融合：
+
+  final_logits_i = raw_logits_i + tanh(alpha) * seg_logits_i
+
+其中 alpha 是一个可学习 scalar，初始化为 0。
+
+这样在新增分支刚创建时：
+
+  final_logits == raw_logits
+
+因此不会在初始化瞬间破坏版本二父模型的输出。
+
+
+5.3 损失
+--------
+
+主 mask loss：
+
+  L_mask = 0.3 BCE(final_logits, y) + 0.7 Dice(final_logits, y)
+
+SEG grounding loss：
+
+  L_SEG = 0.3 BCE(seg_logits, y) + 0.7 Dice(seg_logits, y)
+
+总损失：
+
+  L = L_mask + 0.1 * L_SEG
+
+
+5.4 微调初始化机制
+------------------
+
+父 checkpoint：
+
+  outputs/onepass7b_stamp_lora_warmstart_e2/onepass_qwen7b.pt
+
+新增参数：
+
+  --init-onepass-checkpoint
+
+它与 --resume 的区别：
+
+  --resume：
+    恢复同一实验的模型、optimizer、scheduler、epoch 和 global step；
+
+  --init-onepass-checkpoint：
+    只继承父模型的 query、classifier 和 LoRA；
+    新建 SEG grounding head；
+    epoch 从 0 开始；
+    optimizer 和学习率计划重新开始。
+
+这样可以避免把版本二已经衰减到 0 的学习率继续带入新实验。
+
+
+5.5 训练配置
+------------
+
+  父模型：版本二最终 checkpoint
+  epoch：2
+  GPU：2 张 H200
+  每卡 micro batch：6
+  gradient accumulation：4
+  有效全局 batch：48
+  query learning rate：1e-5
+  classifier learning rate：1e-5
+  LoRA learning rate：5e-6
+  SEG head learning rate：3e-5
+  SEG grounding loss weight：0.1
+  L_mask：0.3 BCE + 0.7 Dice
+
+实现文件：
+
+  onepass_qwen7b/model.py
+  onepass_qwen7b/train.py
+  onepass_qwen7b/checkpoint.py
+  onepass_qwen7b/eval.py
+  onepass_qwen7b/runtime.py
+
+双 GPU 等待与训练脚本：
+
+  run_onepass7b_seg_grounding_2gpu.sh
+
+该脚本每 10 秒检查两张 GPU 的空闲显存，满足阈值后再执行 CUDA 分配和
+NCCL all-reduce 检查，全部通过后才启动双卡 DDP。
+
+对应提交：
+
+  56c6926 add supervised SEG grounding fine-tuning
+  9f44aef wait for two GPUs before SEG training
+
+
+5.6 最终融合结果
+----------------
+
+  Split     Samples     gIoU       cIoU
+  ------------------------------------------------
+  val       4,896       58.9904    59.9828
+  test      9,602       59.0984    60.6137
+
+相对版本二：
+
+  val gIoU： +0.42 个百分点
+  val cIoU： +0.42 个百分点
+  test gIoU：+0.28 个百分点
+  test cIoU：+0.41 个百分点
+
+相对版本一：
+
+  val gIoU： +0.37 个百分点
+  val cIoU： +0.16 个百分点
+  test gIoU：+0.80 个百分点
+  test cIoU：+0.98 个百分点
+
+
+5.7 三个输出分支的结果
+----------------------
+
+val：
+
+  raw classifier：
+    gIoU = 58.9904
+    cIoU = 59.9828
+
+  SEG grounding branch：
+    gIoU = 58.9556
+    cIoU = 59.9565
+
+  final fusion：
+    gIoU = 58.9904
+    cIoU = 59.9828
+
+test：
+
+  raw classifier：
+    gIoU = 59.0984
+    cIoU = 60.6137
+
+  SEG grounding branch：
+    gIoU = 59.0596
+    cIoU = 60.5753
+
+  final fusion：
+    gIoU = 59.0984
+    cIoU = 60.6137
+
+最终融合参数：
+
+  seg_fusion_alpha = -0.00127385
+
+该值非常接近 0。
+
+final 与 raw 的 cIoU 差异约为：
+
+  val： 0.00005 个百分点
+  test：0.00005 个百分点
+
+可视为完全相同。
+
+
+5.8 版本三结论
+--------------
+
+1. SEG grounding branch 单独已经能够得到接近 raw classifier 的分割结果。
+2. 这说明 h_SEG 确实包含较强的目标定位信息。
+3. 但是模型没有使用 SEG logits 进行最终融合，alpha 收敛到接近 0。
+4. 当前 h_SEG 与 h_MASK 做相似度，h_MASK 本身已经受到 mask loss 监督，
+   所以 SEG branch 很容易学习成原 classifier 的近似副本。
+5. 版本三的约 +0.4 cIoU 提升更可能来自：
+
+   a. L_SEG 对共享 hidden state 的辅助正则化；
+   b. query、classifier 和 LoRA 又继续训练了两轮；
+   c. 而不是 SEG logits 对 final mask 的直接贡献。
+
+6. 因为版本三同时增加了 SEG loss 并额外训练两轮，所以目前还不能把全部
+   +0.4 cIoU 严格归因于 SEG loss。
+
+
+六、三版本统一对比
+==================
+
+  Method                         val gIoU  val cIoU  test gIoU  test cIoU
+  ------------------------------------------------------------------------
+  V1 OnePass from Qwen             58.62     59.82      58.30      59.64
+  V2 OnePass + STAMP LoRA          58.57     59.56      58.82      60.20
+  V3 OnePass + SEG grounding       58.99     59.98      59.10      60.61
+  Fair reproduced STAMP-7B         61.28     63.64      61.39      64.05
+
+当前最佳 OnePass：版本三。
+
+版本三相对公平复现 STAMP-7B 的差距：
+
+  val gIoU： -2.29 个百分点
+  val cIoU： -3.66 个百分点
+  test gIoU：-2.29 个百分点
+  test cIoU：-3.43 个百分点
+
+
+七、推理速度说明
+================
+
+版本三在两张空闲 GPU 上并行评估时测得：
+
+  val end-to-end： 约 0.249 秒/样本
+  test end-to-end：约 0.249 秒/样本
+
+公平复现 STAMP-7B 之前测得：
+
+  val end-to-end： 约 0.967 秒/样本
+  test end-to-end：约 0.961 秒/样本
+
+按当前批量吞吐计算，版本三约快 3.9 倍。
+
+但需要注意：
+
+1. OnePass 使用 batch size 8；
+2. 公平 STAMP 评估使用的 batch 和模型调用结构不同；
+3. 该数字表示当前服务器条件下的吞吐，不是严格 batch-1 架构延迟；
+4. 版本二 val 曾出现约 1.22 秒/样本的异常慢速，说明当时 GPU 存在资源竞争；
+5. 版本三 val/test 均约 0.249 秒/样本，测试条件更稳定。
+
+
+八、与公平 STAMP 和论文结果的关系
+================================
+
+公平复现 STAMP-7B 的训练条件：
+
+  与版本一使用相同 Qwen2-VL-7B 基础模型；
+  相同 RefCOCOg 训练数据；
+  相同两轮训练；
+  相同有效全局 batch；
+  STAMP 使用 autoregressive SEG + 第二次 MASK 分类。
+
+因此当前最可信的结构比较是：
+
+  OnePass V3：val/test cIoU = 59.98 / 60.61
+  Fair STAMP：val/test cIoU = 63.64 / 64.05
+
+论文截图中的 STAMP-7B mask-decoder-free RefCOCOg 数字约为：
+
+  val(U) = 75.7
+  test(U) = 76.2
+
+但不能直接把当前实验数字视为论文同配置复现，原因包括：
+
+1. 论文训练可能使用更完整的多数据集联合训练；
+2. 当前公平实验只使用 RefCOCOg 80,512 条数据；
+3. 当前只训练两轮；
+4. checkpoint 初始化、prompt、指标实现和官方最终模型可能不同；
+5. 当前公平复现 STAMP 本身也明显低于论文数值。
+
+因此当前实验适合用于“相同本地设置下 OnePass 与 STAMP 的结构对比”，不适合
+直接声称已经复现论文最终精度。
+
+
+九、当前最关键的判断
+====================
+
+1. OnePass 单阶段路线是可行的。
+2. STAMP LoRA warm-start 不是决定性因素。
+3. h_SEG 已经具有目标定位能力。
+4. 当前 SEG branch 与 raw classifier 信息冗余，因此融合系数接近 0。
+5. 仅继续增加当前 L_SEG 权重，预计难以补齐 3 到 4 个 cIoU 的差距。
+6. 下一步应该改变 SEG 监督的信息来源，而不是再复制一次 h_MASK 分类。
+
+
+十、必须补充的控制实验
+======================
+
+当前版本三缺少以下控制实验：
+
+  使用版本二相同父 checkpoint；
+  相同两轮训练；
+  相同 query/head/LoRA 学习率；
+  不创建 SEG grounding head；
+  不使用 L_SEG。
+
+该实验用于区分：
+
+  “额外训练两轮带来的提升”
+
+与：
+
+  “SEG grounding loss 真正带来的提升”。
+
+在该控制实验完成前，不能把版本三全部约 +0.4 cIoU 提升归因于 SEG loss。
+
+
+十一、下一版推荐设计
+====================
+
+11.1 使用原始视觉 token 监督 SEG
+--------------------------------
+
+当前：
+
+  h_SEG <-> h_MASK
+
+推荐改为：
+
+  h_SEG <-> 原始 merged visual token V_i
+
+定义：
+
+  z_SEG = W_s h_SEG
+  k_i = W_v V_i
+  score_i = cosine(z_SEG, k_i) / temperature
+
+使用 token-grid GT mask 监督 score_i：
+
+  L_SEG-mask = 0.3 BCE(score, y) + 0.7 Dice(score, y)
+
+这样 h_SEG 学习的是“文本所指目标与原始图像区域之间的对应关系”，而不是
+模仿已经完成目标定位的 h_MASK。
+
+
+11.2 增加目标前景原型对比损失
+--------------------------------
+
+利用 GT token mask 构造前景视觉原型：
+
+  v_fg = sum(y_i * k_i) / sum(y_i)
+
+让 h_SEG：
+
+  接近当前样本的 v_fg；
+  远离背景视觉特征；
+  远离 batch 中其他样本的目标原型。
+
+可使用 InfoNCE：
+
+  L_contrast = InfoNCE(z_SEG, v_fg)
+
+建议初始总损失：
+
+  L = L_mask + 0.2 * L_SEG-mask + 0.05 * L_contrast
+
+
+11.3 加载 STAMP 特殊 token embedding
+------------------------------------
+
+从 STAMP-7B-lora 的 modules_to_save/embed_tokens 中读取：
+
+  STAMP <|seg|> embedding  -> OnePass e_SEG
+  STAMP <|mask|> embedding -> OnePass E_MASK
+
+这比仅加载 LoRA 和 classifier 更贴合 OnePass 查询初始化。
+
+
+11.4 使用每位置融合门控
+----------------------
+
+当前只有一个全局 scalar alpha：
+
+  final_i = raw_i + alpha * seg_i
+
+它只能决定全部位置统一使用或不使用 SEG，因此很容易收敛到 0。
+
+推荐：
+
+  gate_i = sigmoid(MLP(h_MASK_i, h_SEG))
+  final_i = raw_i + gate_i * seg_visual_i
+
+将 gate 最后一层 bias 初始化为 -3，使初始 gate 约为 0.047，从而基本保持父
+模型输出，同时允许不同位置选择不同融合强度。
+
+
+11.5 分阶段训练
+---------------
+
+阶段 A，约 0.5 epoch：
+
+  冻结父模型 LoRA、query builder 和 classifier；
+  只训练新的 SEG visual projection、contrastive head 和 gate；
+  新模块 learning rate：3e-5。
+
+阶段 B，约 2 epochs：
+
+  解冻 query/classifier/LoRA；
+  SEG 新模块 learning rate：3e-5；
+  query/classifier learning rate：1e-5；
+  LoRA learning rate：5e-6。
+
+这样可以减少父模型直接吸收全部梯度、新分支始终学不到互补信息的问题。
+
+
+十二、最终总结
+==============
+
+1. V1 证明了 OnePass 从普通 Qwen2-VL-7B 初始化即可工作，val/test cIoU 为
+   59.82/59.64。
+2. V2 使用 STAMP LoRA 和 classifier warm-start，结果为 59.56/60.20，迁移
+   效果不稳定。
+3. V3 在 V2 上增加 h_SEG-h_MASK grounding，结果提高到 59.98/60.61，是当前
+   最佳 OnePass。
+4. V3 的 SEG branch 单独性能接近 raw classifier，说明 h_SEG 确实已经学习
+   到目标定位信息。
+5. 但融合 alpha 接近 0，final 与 raw 几乎完全一致，说明当前 SEG branch 与
+   原 classifier 高度冗余。
+6. 当前 OnePass 仍比公平 STAMP-7B 低约 3.4 到 3.7 cIoU。
+7. 下一步最有价值的方向是：
+
+   STAMP SEG/MASK embedding 初始化
+   + h_SEG 对齐原始视觉 token
+   + 前景原型对比损失
+   + 每位置语义门控
+   + 分阶段训练
+
+8. 在开始下一版完整训练前，应先补充“继续训练但不加 SEG”的控制实验，
+   准确确认当前约 +0.4 cIoU 的真实来源。
+
