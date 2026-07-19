@@ -1,0 +1,132 @@
+[
+  {
+    "id": "hipie",
+    "name": "HIPIE",
+    "paper_group": "specialised_baseline",
+    "repo_url": "https://github.com/berkeley-hipie/HIPIE.git",
+    "repo_status": "official_code",
+    "native_output": "hard mask or mask probability",
+    "freeref_input": "final referring mask",
+    "placement": "HIPIE -> FreeRef"
+  },
+  {
+    "id": "rela",
+    "name": "ReLA",
+    "paper_group": "specialised_baseline",
+    "repo_url": "https://github.com/henghuiding/ReLA.git",
+    "repo_status": "official_code",
+    "native_output": "mask logits or hard mask",
+    "freeref_input": "per-expression final mask",
+    "placement": "ReLA -> FreeRef"
+  },
+  {
+    "id": "polyformer",
+    "name": "PolyFormer-L",
+    "paper_group": "specialised_baseline",
+    "repo_url": "https://github.com/amazon-science/polygon-transformer.git",
+    "repo_status": "official_code",
+    "native_output": "polygon rasterized to a mask",
+    "freeref_input": "rasterized polygon mask",
+    "placement": "PolyFormer -> rasterize -> FreeRef"
+  },
+  {
+    "id": "uninext",
+    "name": "UNINEXT-L",
+    "paper_group": "specialised_baseline",
+    "repo_url": "https://github.com/MasterBin-IIAU/UNINEXT.git",
+    "repo_status": "official_code",
+    "native_output": "instance mask or probability",
+    "freeref_input": "retrieved referring-instance mask",
+    "placement": "UNINEXT -> FreeRef"
+  },
+  {
+    "id": "pixellm",
+    "name": "PixelLM",
+    "paper_group": "embedding_prediction",
+    "repo_url": "https://github.com/MaverickRen/PixelLM.git",
+    "repo_status": "official_code",
+    "native_output": "pixel-decoder mask",
+    "freeref_input": "final decoder mask",
+    "placement": "PixelLM -> FreeRef"
+  },
+  {
+    "id": "lisa",
+    "name": "LISA",
+    "paper_group": "embedding_prediction",
+    "repo_url": "https://github.com/dvlab-research/LISA.git",
+    "repo_status": "official_code",
+    "native_output": "SAM-decoded mask",
+    "freeref_input": "final SAM mask",
+    "placement": "LISA -> SAM -> FreeRef"
+  },
+  {
+    "id": "gsva",
+    "name": "GSVA",
+    "paper_group": "embedding_prediction",
+    "repo_url": "https://github.com/LeapLabTHU/GSVA.git",
+    "repo_status": "official_code",
+    "native_output": "one or more SAM-decoded masks",
+    "freeref_input": "each final target mask; preserve rejected empty targets",
+    "placement": "GSVA -> SAM -> FreeRef"
+  },
+  {
+    "id": "read",
+    "name": "READ",
+    "paper_group": "embedding_prediction",
+    "repo_url": "https://github.com/rui-qian/READ.git",
+    "repo_status": "official_code",
+    "native_output": "point-prompted decoder mask",
+    "freeref_input": "final decoded mask",
+    "placement": "READ -> decoder -> FreeRef"
+  },
+  {
+    "id": "text4seg",
+    "name": "Text4Seg",
+    "paper_group": "token_prediction",
+    "repo_url": "https://github.com/mc-lan/Text4Seg.git",
+    "repo_status": "official_code",
+    "native_output": "token mask or optional SAM-H mask",
+    "freeref_input": "native token mask for the main no-SAM path; final mask for the SAM path",
+    "placement": "Text4Seg -> FreeRef (main), or Text4Seg -> SAM -> FreeRef (ablation)"
+  },
+  {
+    "id": "stamp",
+    "name": "STAMP",
+    "paper_group": "token_prediction",
+    "repo_url": "https://github.com/HKUST-LongGroup/STAMP.git",
+    "repo_status": "official_code",
+    "native_output": "patch-level foreground/background logits",
+    "freeref_input": "upsampled patch probability (preferred) or hard mask",
+    "placement": "STAMP -> FreeRef (main), or STAMP -> SAM -> FreeRef (ablation)"
+  },
+  {
+    "id": "seg-zero",
+    "name": "Seg-Zero",
+    "paper_group": "mask_decoder",
+    "repo_url": "https://github.com/JIA-Lab-research/Seg-Zero.git",
+    "repo_status": "official_code",
+    "native_output": "SAM2-decoded mask",
+    "freeref_input": "final SAM2 mask",
+    "placement": "Seg-Zero -> SAM2 -> FreeRef"
+  },
+  {
+    "id": "segllm",
+    "name": "SegLLM",
+    "paper_group": "mask_decoder",
+    "repo_url": null,
+    "repo_status": "prediction_import_only_no_verified_official_repo",
+    "native_output": "multi-round final mask",
+    "freeref_input": "final mask of each round",
+    "placement": "SegLLM -> FreeRef"
+  },
+  {
+    "id": "segagent",
+    "name": "SegAgent",
+    "paper_group": "mask_decoder",
+    "repo_url": "https://github.com/aim-uofa/SegAgent.git",
+    "repo_status": "official_code",
+    "native_output": "SimpleClick-decoded mask",
+    "freeref_input": "final interactive mask",
+    "placement": "SegAgent -> SimpleClick -> FreeRef"
+  }
+]
