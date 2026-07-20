@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${TRAINING_FREE_REPO:-${SCRIPT_DIR}}"
 TEXT4SEG_DIR="${TEXT4SEG_DIR:-${ROOT}/code/Text4Seg}"
 CONDA_ENV="${TEXT4SEG_CONDA_ENV:-text4seg-tf}"
+SETUP_MODE="${TEXT4SEG_SETUP_MODE:-auto}"
 MODEL_PATH="${TEXT4SEG_MODEL_PATH:-lmc22/text4seg-llava-7b-p24}"
 VISION_TOWER="${TEXT4SEG_VISION_TOWER:-openai/clip-vit-large-patch14-336}"
 DESCRIPTOR_GRID_SIZE="${TEXT4SEG_DESCRIPTOR_GRID_SIZE:-${TEXT4SEG_VISUAL_TOKENS:-}}"
@@ -32,6 +33,11 @@ if [[ -f "${ROOT}/models/SAM/sam_vit_h_4b8939.pth" ]]; then
 fi
 SAM_PATH="${TEXT4SEG_SAM_PATH:-${DEFAULT_SAM_PATH}}"
 
+if [[ "${SETUP_MODE}" != "auto" && "${SETUP_MODE}" != "offline" ]]; then
+  echo "ERROR: TEXT4SEG_SETUP_MODE must be auto or offline, got ${SETUP_MODE}." >&2
+  exit 1
+fi
+
 export HF_HOME="${HF_HOME:-${ROOT}/.cache/huggingface}"
 export TOKENIZERS_PARALLELISM=false
 mkdir -p "${ROOT}/code" "${ROOT}/models" "${ROOT}/outputs" "${HF_HOME}" "$(dirname "${SAM_PATH}")"
@@ -50,6 +56,10 @@ echo "Evaluation protocol: paired flat JSON (not the official REFER loader)"
 
 echo "[1/7] Fetching official Text4Seg code"
 if [[ ! -d "${TEXT4SEG_DIR}/.git" ]]; then
+  if [[ "${SETUP_MODE}" == "offline" ]]; then
+    echo "ERROR: Text4Seg code is missing in offline mode: ${TEXT4SEG_DIR}" >&2
+    exit 1
+  fi
   GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 --filter=blob:none \
     https://github.com/mc-lan/Text4Seg.git "${TEXT4SEG_DIR}"
 else
@@ -58,12 +68,20 @@ fi
 
 echo "[2/7] Creating an H200-compatible Text4Seg environment"
 if ! conda env list | awk '{print $1}' | grep -qx "${CONDA_ENV}"; then
+  if [[ "${SETUP_MODE}" == "offline" ]]; then
+    echo "ERROR: conda environment ${CONDA_ENV} is missing in offline mode." >&2
+    exit 1
+  fi
   conda create -y -n "${CONDA_ENV}" python=3.10 pip
 fi
 
 if ! conda run -n "${CONDA_ENV}" python -c \
   'import torch, transformers, pycocotools, skimage; assert torch.__version__.startswith("2.6."); assert transformers.__version__.startswith("4.37.")' \
   >/dev/null 2>&1; then
+  if [[ "${SETUP_MODE}" == "offline" ]]; then
+    echo "ERROR: ${CONDA_ENV} does not contain the validated Text4Seg dependencies." >&2
+    exit 1
+  fi
   conda run --no-capture-output -n "${CONDA_ENV}" python -m pip install --upgrade pip wheel setuptools
   conda run --no-capture-output -n "${CONDA_ENV}" python -m pip install \
     torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
@@ -73,8 +91,10 @@ if ! conda run -n "${CONDA_ENV}" python -c \
     scipy scikit-image scikit-learn pillow opencv-python-headless pycocotools \
     matplotlib tqdm einops==0.6.1 einops-exts==0.0.4 timm==0.6.13 protobuf
 fi
-conda run --no-capture-output -n "${CONDA_ENV}" python -m pip install \
-  --no-deps -e "${TEXT4SEG_DIR}"
+if [[ "${SETUP_MODE}" == "auto" ]]; then
+  conda run --no-capture-output -n "${CONDA_ENV}" python -m pip install \
+    --no-deps -e "${TEXT4SEG_DIR}"
+fi
 
 echo "[3/7] Verifying the paired STAMP/Text4Seg evaluation JSON"
 if [[ ! -f "${EVAL_JSON}" ]]; then
@@ -85,6 +105,10 @@ fi
 echo "[4/7] Resolving the official SAM-H comparison checkpoint: ${SAM_PATH}"
 SAM_BYTES="$(stat -c '%s' "${SAM_PATH}" 2>/dev/null || echo 0)"
 if (( SAM_BYTES < 2000000000 )); then
+  if [[ "${SETUP_MODE}" == "offline" ]]; then
+    echo "ERROR: a complete SAM-H checkpoint is required in offline mode: ${SAM_PATH}" >&2
+    exit 1
+  fi
   rm -f "${SAM_PATH}"
   if command -v wget >/dev/null 2>&1; then
     wget -c -O "${SAM_PATH}.part" https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth

@@ -42,6 +42,8 @@ bash run_text4seg_llava7b_p16_full_eval.sh
 
 它只接受本地 `llava-v1.5-7b-p16` checkpoint，并对 RefCOCO、RefCOCO+、
 RefCOCOg 的八个 split 串行计算 Text4Seg、Text4Seg + FreeRef 及独立 SAM 对照。
+脚本以 `TEXT4SEG_SETUP_MODE=offline` 调用底层评测；正式运行阶段不会克隆代码、
+下载权重或安装 Python 包，缺少任何依赖都会在推理前退出。
 该入口统一了模型族和描述符分辨率，但仍使用本项目的配对 flat JSON；只有先通过
 作者官方 REFER loader 的基线复现门槛，结果才可写成“复现论文数值”。
 
