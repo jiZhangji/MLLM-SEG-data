@@ -16,6 +16,10 @@ from universal_freeref.export_lisa_masks import (
     group_record_positions,
     lisa_question,
 )
+from universal_freeref.export_lisa_freeref_prompt import (
+    probability_to_sam_mask_input,
+)
+from universal_freeref.evaluate_lisa_freeref_prompt import summarize_rows
 from universal_freeref.io import load_probability
 from universal_freeref.schema import ManifestItem
 
@@ -104,3 +108,75 @@ def test_lisa_runner_is_local_resumable_and_invokes_paired_evaluation() -> None:
     assert "universal_freeref.evaluate" in text
     assert "universal_freeref.summarize" in text
     assert "refcoco_testA" in text
+
+
+class _IdentityTransform:
+    def apply_image(self, image: np.ndarray) -> np.ndarray:
+        return image
+
+
+def test_lisa_freeref_probability_becomes_padded_sam_logit_prompt() -> None:
+    probability = np.asarray([[0.25, 0.5, 0.75], [0.1, 0.9, 0.6]], dtype=np.float32)
+    prompt = probability_to_sam_mask_input(
+        probability,
+        _IdentityTransform(),
+        (4, 5),
+    )
+    assert prompt.shape == (4, 5)
+    assert np.allclose(prompt[:2, :3], np.log(probability / (1.0 - probability)))
+    assert np.count_nonzero(prompt[2:, :]) == 0
+    assert np.count_nonzero(prompt[:, 3:]) == 0
+
+
+def test_lisa_freeref_prompt_summary_reports_paired_metrics_and_timing() -> None:
+    rows = [
+        {
+            "baseline_iou": 0.5,
+            "prompted_iou": 0.7,
+            "iou_delta": 0.2,
+            "baseline_boundary_iou": 0.2,
+            "prompted_boundary_iou": 0.4,
+            "base_seconds": 0.25,
+            "freeref_seconds": 0.10,
+            "second_decoder_seconds": 0.02,
+            "total_seconds": 0.38,
+            "_baseline_intersection": 5,
+            "_baseline_union": 10,
+            "_prompted_intersection": 7,
+            "_prompted_union": 10,
+        },
+        {
+            "baseline_iou": 0.8,
+            "prompted_iou": 0.7,
+            "iou_delta": -0.1,
+            "baseline_boundary_iou": 0.5,
+            "prompted_boundary_iou": 0.6,
+            "base_seconds": 0.35,
+            "freeref_seconds": 0.20,
+            "second_decoder_seconds": 0.04,
+            "total_seconds": 0.60,
+            "_baseline_intersection": 8,
+            "_baseline_union": 10,
+            "_prompted_intersection": 7,
+            "_prompted_union": 10,
+        },
+    ]
+    summary = summarize_rows(rows, bootstrap_samples=0, seed=0)
+    assert summary["samples"] == 2
+    assert np.isclose(summary["baseline_mean_iou"], 0.65)
+    assert np.isclose(summary["prompted_mean_iou"], 0.7)
+    assert np.isclose(summary["baseline_cIoU"], 0.65)
+    assert np.isclose(summary["prompted_cIoU"], 0.7)
+    assert summary["improved_samples"] == 1
+    assert summary["degraded_samples"] == 1
+    assert np.isclose(summary["base_seconds_per_sample"], 0.3)
+    assert np.isclose(summary["total_seconds_per_sample"], 0.49)
+
+
+def test_lisa_freeref_prompt_runner_is_offline_and_defaults_to_smoke_test() -> None:
+    text = (ROOT / "run_lisa_freeref_prompt_eval.sh").read_text(encoding="utf-8")
+    assert "HF_HUB_OFFLINE=1" in text
+    assert "TRANSFORMERS_OFFLINE=1" in text
+    assert "LISA_PROMPT_LIMIT:-16" in text
+    assert "universal_freeref.export_lisa_freeref_prompt" in text
+    assert "universal_freeref.evaluate_lisa_freeref_prompt" in text
