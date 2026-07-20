@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import sys
 import time
 from pathlib import Path
@@ -25,13 +26,62 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--sam-path", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--visual-tokens", type=int, default=24)
+    parser.add_argument(
+        "--descriptor-grid-size",
+        type=int,
+        default=None,
+        help="Text4Seg semantic-descriptor grid side length (for example, 16 for p16).",
+    )
+    parser.add_argument(
+        "--visual-tokens",
+        type=int,
+        default=None,
+        help="Deprecated alias for --descriptor-grid-size.",
+    )
     parser.add_argument("--conv-mode", default="vicuna_v1")
     parser.add_argument("--max-new-tokens", type=int, default=3069)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
+
+
+def infer_descriptor_grid_size(model_path: str) -> int | None:
+    match = re.search(r"(?<![a-z0-9])p(16|24|32)(?![a-z0-9])", model_path.lower())
+    return int(match.group(1)) if match else None
+
+
+def resolve_descriptor_grid_size(
+    model_path: str,
+    descriptor_grid_size: int | None,
+    legacy_visual_tokens: int | None,
+) -> int:
+    if (
+        descriptor_grid_size is not None
+        and legacy_visual_tokens is not None
+        and descriptor_grid_size != legacy_visual_tokens
+    ):
+        raise ValueError(
+            "--descriptor-grid-size and deprecated --visual-tokens disagree: "
+            f"{descriptor_grid_size} != {legacy_visual_tokens}."
+        )
+    configured = descriptor_grid_size if descriptor_grid_size is not None else legacy_visual_tokens
+    inferred = infer_descriptor_grid_size(model_path)
+    if configured is None:
+        if inferred is None:
+            raise ValueError(
+                "The Text4Seg descriptor grid is ambiguous. Pass --descriptor-grid-size explicitly "
+                "or use a checkpoint path containing p16, p24, or p32."
+            )
+        configured = inferred
+    if configured <= 1:
+        raise ValueError("descriptor-grid-size must exceed one.")
+    if inferred is not None and configured != inferred:
+        raise ValueError(
+            f"Checkpoint {model_path!r} declares p{inferred}, but the decoder was configured for "
+            f"p{configured}. Refusing to evaluate a mismatched Text4Seg protocol."
+        )
+    return configured
 
 
 def decode_prediction(text: str, grid_size: int, decode_mask, translate_sequence) -> np.ndarray:
@@ -103,8 +153,13 @@ def save_mask(path: Path, mask: np.ndarray) -> None:
 
 def main() -> int:
     args = parse_args()
-    if args.visual_tokens <= 1 or args.limit < 0 or args.offset < 0:
-        raise ValueError("visual-tokens must exceed one; limit and offset must be non-negative.")
+    descriptor_grid_size = resolve_descriptor_grid_size(
+        args.model_path,
+        args.descriptor_grid_size,
+        args.visual_tokens,
+    )
+    if args.limit < 0 or args.offset < 0:
+        raise ValueError("limit and offset must be non-negative.")
     code_dir = args.text4seg_code_dir.resolve()
     if not (code_dir / "llava").is_dir():
         raise FileNotFoundError(f"Text4Seg llava package was not found below {code_dir}.")
@@ -199,9 +254,11 @@ def main() -> int:
             model_seconds += time.perf_counter() - start
             model_calls += 1
             response = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
-            coarse_grid = decode_prediction(response, args.visual_tokens, decode_rle_mask, translate_labels)
+            coarse_grid = decode_prediction(response, descriptor_grid_size, decode_rle_mask, translate_labels)
             coarse = F.interpolate(
-                torch.from_numpy(coarse_grid).reshape(1, 1, args.visual_tokens, args.visual_tokens).double(),
+                torch.from_numpy(coarse_grid)
+                .reshape(1, 1, descriptor_grid_size, descriptor_grid_size)
+                .double(),
                 size=(sample.image.height, sample.image.width),
                 mode="nearest",
             )[0, 0].numpy().astype(np.uint8)
@@ -251,7 +308,10 @@ def main() -> int:
         "samples": len(manifest_rows),
         "model": args.model_path,
         "eval_json": str(args.eval_json),
-        "visual_tokens": args.visual_tokens,
+        "descriptor_grid_size": descriptor_grid_size,
+        "descriptor_count": descriptor_grid_size * descriptor_grid_size,
+        "checkpoint_grid_size": infer_descriptor_grid_size(args.model_path),
+        "evaluation_protocol": "paired_flat_json_not_official_refer_loader",
         "model_calls": model_calls,
         "reused_samples": len(manifest_rows) - model_calls,
         "model_seconds_per_call": model_seconds / max(model_calls, 1),

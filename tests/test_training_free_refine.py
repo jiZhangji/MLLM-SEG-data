@@ -11,7 +11,11 @@ import torch
 from PIL import Image
 
 from training_free_refine.eval_text4seg_outputs import main as eval_text4seg_main
-from training_free_refine.export_text4seg_masks import decode_prediction
+from training_free_refine.export_text4seg_masks import (
+    decode_prediction,
+    infer_descriptor_grid_size,
+    resolve_descriptor_grid_size,
+)
 from training_free_refine.refiner import (
     TrainingFreeRefineConfig,
     TrainingFreeUncertaintyRefiner,
@@ -147,6 +151,20 @@ class TrainingFreeRefineTests(unittest.TestCase):
 
         prediction = decode_prediction("prefix<seg>encoded</seg>suffix", 2, fake_decode, fake_translate)
         np.testing.assert_array_equal(prediction, [[0, 1], [1, 1]])
+
+    def test_text4seg_descriptor_grid_is_inferred_from_checkpoint_name(self):
+        self.assertEqual(infer_descriptor_grid_size("lmc22/text4seg-llava-7b-p24"), 24)
+        self.assertEqual(infer_descriptor_grid_size("/models/llava-v1.5-7b-p16"), 16)
+        self.assertIsNone(infer_descriptor_grid_size("/models/text4seg"))
+        self.assertEqual(resolve_descriptor_grid_size("/models/model-p32", None, None), 32)
+
+    def test_text4seg_descriptor_grid_rejects_protocol_mismatch(self):
+        with self.assertRaisesRegex(ValueError, "declares p24"):
+            resolve_descriptor_grid_size("lmc22/text4seg-llava-7b-p24", 16, None)
+        with self.assertRaisesRegex(ValueError, "disagree"):
+            resolve_descriptor_grid_size("/models/text4seg", 16, 24)
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            resolve_descriptor_grid_size("/models/text4seg", None, None)
 
 
 if __name__ == "__main__":

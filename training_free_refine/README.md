@@ -82,11 +82,27 @@ JSON already used by STAMP, and evaluates coarse/training-free/SAM masks:
 bash run_text4seg_training_free_eval.sh
 ```
 
-It defaults to complete RefCOCOg val(U). Set `TEXT4SEG_EVAL_JSON`, result paths,
-and optionally `TEXT4SEG_EVAL_LIMIT` when starting a smoke or test(U) run.
+It defaults to complete RefCOCOg val(U) with the public p24 demonstration
+checkpoint. Set `TEXT4SEG_EVAL_JSON`, result paths, and optionally
+`TEXT4SEG_EVAL_LIMIT` when starting a smoke or test(U) run. `p24` means a
+24-by-24 semantic-descriptor grid, not 24 visual input tokens. It is not the
+paper-default p16 protocol and must be labeled separately in result tables.
 The released Text4Seg checkpoint records the author's relative CLIP path; the
 runner maps it to the equivalent Hugging Face identifier
 `openai/clip-vit-large-patch14-336` before model construction.
+
+For the paper-aligned LLaVA-1.5/Vicuna-7B p16 model family, place the official
+p16 checkpoint locally and run:
+
+```bash
+bash run_text4seg_llava7b_p16_full_eval.sh
+```
+
+The exporter validates that the configured descriptor grid agrees with the
+checkpoint's `p16`, `p24`, or `p32` suffix. See
+`TEXT4SEG_CONFIG_ALIGNMENT_CN.md` for the exact paper-row mapping and the
+remaining distinction between paired flat-JSON evaluation and an official
+REFER-loader reproduction.
 
 ## Publication-quality visualization
 

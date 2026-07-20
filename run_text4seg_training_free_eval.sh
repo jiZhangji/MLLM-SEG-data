@@ -8,6 +8,19 @@ TEXT4SEG_DIR="${TEXT4SEG_DIR:-${ROOT}/code/Text4Seg}"
 CONDA_ENV="${TEXT4SEG_CONDA_ENV:-text4seg-tf}"
 MODEL_PATH="${TEXT4SEG_MODEL_PATH:-lmc22/text4seg-llava-7b-p24}"
 VISION_TOWER="${TEXT4SEG_VISION_TOWER:-openai/clip-vit-large-patch14-336}"
+DESCRIPTOR_GRID_SIZE="${TEXT4SEG_DESCRIPTOR_GRID_SIZE:-${TEXT4SEG_VISUAL_TOKENS:-}}"
+if [[ -z "${DESCRIPTOR_GRID_SIZE}" ]]; then
+  case "${MODEL_PATH,,}" in
+    *p16*) DESCRIPTOR_GRID_SIZE=16 ;;
+    *p24*) DESCRIPTOR_GRID_SIZE=24 ;;
+    *p32*) DESCRIPTOR_GRID_SIZE=32 ;;
+    *)
+      echo "ERROR: cannot infer the Text4Seg descriptor grid from MODEL_PATH=${MODEL_PATH}." >&2
+      echo "Set TEXT4SEG_DESCRIPTOR_GRID_SIZE to 16, 24, or 32 explicitly." >&2
+      exit 1
+      ;;
+  esac
+fi
 EVAL_JSON="${TEXT4SEG_EVAL_JSON:-${ROOT}/code/STAMP/playground/data/json_eval_baseline/refcocog_val.json}"
 EVAL_LIMIT="${TEXT4SEG_EVAL_LIMIT:-0}"
 CUDA_DEVICE="${CUDA_DEVICE:-0}"
@@ -24,12 +37,16 @@ export TOKENIZERS_PARALLELISM=false
 mkdir -p "${ROOT}/code" "${ROOT}/models" "${ROOT}/outputs" "${HF_HOME}" "$(dirname "${SAM_PATH}")"
 
 if command -v flock >/dev/null 2>&1; then
-  exec 9>"${ROOT}/outputs/.text4seg_training_free_refcocog_val.lock"
+  exec 9>"${ROOT}/outputs/.text4seg_training_free.lock"
   if ! flock -n 9; then
-    echo "Another Text4Seg training-free val job already holds the lock." >&2
+    echo "Another Text4Seg training-free job already holds the lock." >&2
     exit 0
   fi
 fi
+
+echo "Text4Seg checkpoint: ${MODEL_PATH}"
+echo "Semantic-descriptor grid: p${DESCRIPTOR_GRID_SIZE} (${DESCRIPTOR_GRID_SIZE}x${DESCRIPTOR_GRID_SIZE})"
+echo "Evaluation protocol: paired flat JSON (not the official REFER loader)"
 
 echo "[1/7] Fetching official Text4Seg code"
 if [[ ! -d "${TEXT4SEG_DIR}/.git" ]]; then
@@ -101,7 +118,7 @@ CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" PYTHONPATH="${REPO}:${PYTHONPATH:-}" \
     --data-root "${ROOT}" \
     --sam-path "${SAM_PATH}" \
     --output-dir "${RESULTS_ROOT}" \
-    --visual-tokens 24 \
+    --descriptor-grid-size "${DESCRIPTOR_GRID_SIZE}" \
     --limit "${EVAL_LIMIT}" \
     --seed 0
 

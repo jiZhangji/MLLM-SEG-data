@@ -213,8 +213,26 @@ def main() -> int:
     refined_ciou = totals["refined_inter"] / max(totals["refined_union"], 1)
     improved = sum(float(row["iou_delta"]) > 1e-12 for row in rows)
     degraded = sum(float(row["iou_delta"]) < -1e-12 for row in rows)
+    export_metadata: dict[str, object] = {}
+    if args.manifest is not None:
+        export_summary_path = args.manifest.parent / "export_summary.json"
+        if export_summary_path.is_file():
+            value = json.loads(export_summary_path.read_text(encoding="utf-8"))
+            if isinstance(value, dict):
+                for key in (
+                    "model",
+                    "eval_json",
+                    "descriptor_grid_size",
+                    "descriptor_count",
+                    "checkpoint_grid_size",
+                    "evaluation_protocol",
+                ):
+                    if key in value:
+                        export_metadata[key] = value[key]
+
     summary: dict[str, object] = {
         "source": "official_text4seg_saved_masks",
+        "base_export": export_metadata,
         "samples": count,
         "coarse_mean_iou": sum(float(row["coarse_iou"]) for row in rows) / count,
         "refined_mean_iou": sum(float(row["refined_iou"]) for row in rows) / count,
