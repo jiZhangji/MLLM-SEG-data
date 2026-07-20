@@ -91,6 +91,17 @@ The released Text4Seg checkpoint records the author's relative CLIP path; the
 runner maps it to the equivalent Hugging Face identifier
 `openai/clip-vit-large-patch14-336` before model construction.
 
+To evaluate that same public p24 checkpoint on all eight RefCOCO, RefCOCO+,
+and RefCOCOg splits, while reusing already completed split outputs, run:
+
+```bash
+bash run_text4seg_public_p24_full_eval.sh
+bash check_text4seg_public_p24_status.sh
+```
+
+These results are a public-checkpoint paired transfer experiment, not a
+reproduction of the private ms-swift checkpoints used in Text4Seg Table 1.
+
 For the released LLaVA-1.5/Vicuna-7B p16 Table-4 checkpoint family, place the
 checkpoint locally and run:
 
