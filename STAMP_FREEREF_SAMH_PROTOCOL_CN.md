@@ -51,16 +51,20 @@ target_ordering_cIoU == true
 
 ## 全量评测
 
-快速验证通过后再运行：
+快速验证通过后再运行。单张 H100 80GB 推荐两个 split 并行；每个进程各加载一份
+SAM-H，同一 split 内部仍保持官方逐样本评测逻辑：
 
 ```bash
 cd /inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/lh/or/MLLM-SEG/MLLM-SEG-data
 
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 CUDA_DEVICE=0 \
+SAMH_PARALLEL_JOBS=2 SAMH_MIN_FREE_MB=24000 \
 SAM_PATH=/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/lh/or/MLLM-SEG/models/SAM/sam_vit_h_4b8939.pth \
 nohup bash run_frozen_samh_full_eval.sh \
   > ../outputs/stamp_official_samh_full_eval.log 2>&1 < /dev/null &
 ```
+
+如果同时运行其他显存任务，去掉 `SAMH_PARALLEL_JOBS=2` 即恢复默认串行。
 
 这里对 SAM-H 后处理采用官方协议，但前三条 STAMP 路径仍来自同一批已保存 dump。
 因此它是严格配对的后处理实验，不等同于从模型生成阶段开始重跑 STAMP 论文评测。

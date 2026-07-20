@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -22,6 +23,13 @@ class _FakePredictor:
 
 
 class StampSamHProtocolTests(unittest.TestCase):
+    def test_full_runner_exposes_bounded_parallel_scheduler(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "run_frozen_samh_full_eval.sh").read_text(encoding="utf-8")
+        self.assertIn('PARALLEL_JOBS="${SAMH_PARALLEL_JOBS:-1}"', script)
+        self.assertIn("wait_batch", script)
+        self.assertIn("combined summary was not generated", script)
+
     def test_stable_sample_seed_is_paired_and_name_specific(self):
         self.assertEqual(stable_sample_seed(7, "sample-a"), stable_sample_seed(7, "sample-a"))
         self.assertNotEqual(stable_sample_seed(7, "sample-a"), stable_sample_seed(7, "sample-b"))

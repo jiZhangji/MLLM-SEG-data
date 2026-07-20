@@ -7,11 +7,21 @@ STAMP_CODE_DIR="${STAMP_CODE_DIR:-${ROOT}/code/STAMP}"
 SAM_PATH="${SAM_PATH:-${ROOT}/models/SAM/sam_vit_h_4b8939.pth}"
 CONDA_ENV="${STAMP_CONDA_ENV:-STAMP}"
 CUDA_DEVICE="${CUDA_DEVICE:-0}"
-MIN_FREE_MB="${SAMH_MIN_FREE_MB:-12000}"
+PARALLEL_JOBS="${SAMH_PARALLEL_JOBS:-1}"
+MIN_FREE_MB="${SAMH_MIN_FREE_MB:-$((12000 * PARALLEL_JOBS))}"
 OUTPUT_ROOT="${SAMH_OUTPUT_ROOT:-${ROOT}/outputs}"
 COMBINED_DIR="${SAMH_COMBINED_DIR:-${OUTPUT_ROOT}/stamp_official_samh_full_comparison}"
 ONLY_JOBS="${SAMH_ONLY_JOBS:-}"
 LIMIT="${SAMH_LIMIT:-0}"
+
+if ! [[ "${PARALLEL_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: SAMH_PARALLEL_JOBS must be a positive integer." >&2
+  exit 1
+fi
+if ! [[ "${LIMIT}" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: SAMH_LIMIT must be a non-negative integer." >&2
+  exit 1
+fi
 
 mkdir -p "${OUTPUT_ROOT}" "${COMBINED_DIR}"
 if [[ ! -f "${SAM_PATH}" ]] || (( $(stat -c '%s' "${SAM_PATH}" 2>/dev/null || echo 0) < 2000000000 )); then
@@ -55,12 +65,13 @@ declare -a JOBS=(
   "STAMP-7B|refcocog_test|refcocog_test_full_stamp7b"
 )
 
-cd "${REPO}"
-for job in "${JOBS[@]}"; do
+run_job() {
+  local job="$1"
+  local MODEL_LABEL SPLIT_NAME DUMP_NAME JOB_KEY INPUT_DIR SAFE_SPLIT SAFE_MODEL OUTPUT_DIR
   IFS='|' read -r MODEL_LABEL SPLIT_NAME DUMP_NAME <<<"${job}"
   JOB_KEY="${MODEL_LABEL}:${SPLIT_NAME}"
   if [[ -n "${ONLY_JOBS}" ]] && [[ " ${ONLY_JOBS} " != *" ${JOB_KEY} "* ]]; then
-    continue
+    return 0
   fi
   INPUT_DIR="${ROOT}/outputs/refine_stamp_dumps/${DUMP_NAME}"
   SAFE_SPLIT="${SPLIT_NAME//+/plus}"
@@ -68,11 +79,11 @@ for job in "${JOBS[@]}"; do
   OUTPUT_DIR="${OUTPUT_ROOT}/stamp_official_samh_${SAFE_MODEL}_${SAFE_SPLIT}"
   if [[ ! -d "${INPUT_DIR}" ]] || ! find "${INPUT_DIR}" -maxdepth 1 -type f -name '*.pt' -print -quit | grep -q .; then
     echo "SKIP missing dumps: ${MODEL_LABEL} ${SPLIT_NAME} (${INPUT_DIR})"
-    continue
+    return 0
   fi
   if [[ -f "${OUTPUT_DIR}/eval_summary.json" ]]; then
     echo "SKIP complete: ${MODEL_LABEL} ${SPLIT_NAME}"
-    continue
+    return 0
   fi
   echo "RUN ${MODEL_LABEL} ${SPLIT_NAME}"
   CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" PYTHONPATH="${REPO}:${PYTHONPATH:-}" \
@@ -89,7 +100,53 @@ for job in "${JOBS[@]}"; do
       --seed 0 \
       --limit "${LIMIT}" \
       --save-visualizations 8
+}
+
+wait_batch() {
+  local index pid name
+  for index in "${!ACTIVE_PIDS[@]}"; do
+    pid="${ACTIVE_PIDS[$index]}"
+    name="${ACTIVE_NAMES[$index]}"
+    if wait "${pid}"; then
+      echo "DONE ${name}"
+    else
+      echo "ERROR ${name} failed" >&2
+      FAILED=1
+    fi
+  done
+  ACTIVE_PIDS=()
+  ACTIVE_NAMES=()
+}
+
+cd "${REPO}"
+declare -a ACTIVE_PIDS=()
+declare -a ACTIVE_NAMES=()
+FAILED=0
+
+echo "Official SAM-H scheduler: parallel_jobs=${PARALLEL_JOBS}, gpu=${CUDA_DEVICE}, min_free_mb=${MIN_FREE_MB}"
+for job in "${JOBS[@]}"; do
+  if (( PARALLEL_JOBS == 1 )); then
+    if ! run_job "${job}"; then
+      FAILED=1
+      break
+    fi
+    continue
+  fi
+
+  run_job "${job}" &
+  ACTIVE_PIDS+=("$!")
+  ACTIVE_NAMES+=("${job}")
+  if (( ${#ACTIVE_PIDS[@]} >= PARALLEL_JOBS )); then
+    wait_batch
+  fi
 done
+if (( ${#ACTIVE_PIDS[@]} > 0 )); then
+  wait_batch
+fi
+if (( FAILED != 0 )); then
+  echo "ERROR: at least one official SAM-H split failed; combined summary was not generated." >&2
+  exit 1
+fi
 
 PYTHONPATH="${REPO}:${PYTHONPATH:-}" conda run --no-capture-output -n "${CONDA_ENV}" \
   python -m training_free_refine.summarize_sam_h \
