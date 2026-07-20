@@ -144,7 +144,7 @@ wait_batch() {
     else
       echo "ERROR ${split}; worker log: ${log_path}" >&2
       tail -n 40 "${log_path}" >&2 || true
-      FAILED=1
+      FAILED_SPLITS+=("${split}")
     fi
   done
   ACTIVE_PIDS=()
@@ -156,6 +156,7 @@ cd "${SCRIPT_DIR}"
 declare -a ACTIVE_PIDS=()
 declare -a ACTIVE_SPLITS=()
 declare -a ACTIVE_LOGS=()
+declare -a FAILED_SPLITS=()
 FAILED=0
 
 echo "Text4Seg public-p24 scheduler: parallel_jobs=${PARALLEL_JOBS}, gpu=${CUDA_DEVICE}, min_free_mb=${MIN_FREE_MB}"
@@ -173,6 +174,21 @@ for SPLIT in ${SPLITS}; do
 done
 if (( ${#ACTIVE_PIDS[@]} > 0 )); then
   wait_batch
+fi
+
+if (( ${#FAILED_SPLITS[@]} > 0 )); then
+  echo "Retrying ${#FAILED_SPLITS[@]} failed split(s) serially; partial artifacts will be reused."
+  for SPLIT in "${FAILED_SPLITS[@]}"; do
+    SAFE_SPLIT="${SPLIT//+/plus}"
+    RETRY_LOG="${WORKER_LOG_DIR}/${SAFE_SPLIT}.retry.log"
+    if run_split "${SPLIT}" >"${RETRY_LOG}" 2>&1; then
+      echo "RETRY DONE ${SPLIT}; worker log: ${RETRY_LOG}"
+    else
+      echo "RETRY ERROR ${SPLIT}; worker log: ${RETRY_LOG}" >&2
+      tail -n 40 "${RETRY_LOG}" >&2 || true
+      FAILED=1
+    fi
+  done
 fi
 if (( FAILED != 0 )); then
   echo "ERROR: at least one Text4Seg split failed; combined summary was not generated." >&2

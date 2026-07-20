@@ -106,7 +106,8 @@ Text4Seg + frozen SAM-H, and Text4Seg + FreeRef + frozen SAM-H. It defaults to
 four concurrent split workers on one large-memory GPU. Set
 `TEXT4SEG_P24_PARALLEL_JOBS=2` if four model replicas exceed available memory.
 Each worker writes a separate log below
-`outputs/text4seg_public_p24_worker_logs/`.
+`outputs/text4seg_public_p24_worker_logs/`. Failed parallel workers are retried
+serially with resumable artifacts, including failures caused by transient OOM.
 
 For the released LLaVA-1.5/Vicuna-7B p16 Table-4 checkpoint family, place the
 checkpoint locally and run:
