@@ -9,7 +9,9 @@ CONDA_ENV="${STAMP_CONDA_ENV:-STAMP}"
 CUDA_DEVICE="${CUDA_DEVICE:-0}"
 MIN_FREE_MB="${SAMH_MIN_FREE_MB:-12000}"
 OUTPUT_ROOT="${SAMH_OUTPUT_ROOT:-${ROOT}/outputs}"
-COMBINED_DIR="${SAMH_COMBINED_DIR:-${OUTPUT_ROOT}/frozen_samh_full_comparison}"
+COMBINED_DIR="${SAMH_COMBINED_DIR:-${OUTPUT_ROOT}/stamp_official_samh_full_comparison}"
+ONLY_JOBS="${SAMH_ONLY_JOBS:-}"
+LIMIT="${SAMH_LIMIT:-0}"
 
 mkdir -p "${OUTPUT_ROOT}" "${COMBINED_DIR}"
 if [[ ! -f "${SAM_PATH}" ]] || (( $(stat -c '%s' "${SAM_PATH}" 2>/dev/null || echo 0) < 2000000000 )); then
@@ -56,10 +58,14 @@ declare -a JOBS=(
 cd "${REPO}"
 for job in "${JOBS[@]}"; do
   IFS='|' read -r MODEL_LABEL SPLIT_NAME DUMP_NAME <<<"${job}"
+  JOB_KEY="${MODEL_LABEL}:${SPLIT_NAME}"
+  if [[ -n "${ONLY_JOBS}" ]] && [[ " ${ONLY_JOBS} " != *" ${JOB_KEY} "* ]]; then
+    continue
+  fi
   INPUT_DIR="${ROOT}/outputs/refine_stamp_dumps/${DUMP_NAME}"
   SAFE_SPLIT="${SPLIT_NAME//+/plus}"
   SAFE_MODEL="${MODEL_LABEL,,}"
-  OUTPUT_DIR="${OUTPUT_ROOT}/frozen_samh_${SAFE_MODEL}_${SAFE_SPLIT}"
+  OUTPUT_DIR="${OUTPUT_ROOT}/stamp_official_samh_${SAFE_MODEL}_${SAFE_SPLIT}"
   if [[ ! -d "${INPUT_DIR}" ]] || ! find "${INPUT_DIR}" -maxdepth 1 -type f -name '*.pt' -print -quit | grep -q .; then
     echo "SKIP missing dumps: ${MODEL_LABEL} ${SPLIT_NAME} (${INPUT_DIR})"
     continue
@@ -81,13 +87,14 @@ for job in "${JOBS[@]}"; do
       --point-count 10 \
       --cascade-steps 2 \
       --seed 0 \
+      --limit "${LIMIT}" \
       --save-visualizations 8
 done
 
 PYTHONPATH="${REPO}:${PYTHONPATH:-}" conda run --no-capture-output -n "${CONDA_ENV}" \
   python -m training_free_refine.summarize_sam_h \
-    --root "${ROOT}" \
+    --results-root "${OUTPUT_ROOT}" \
     --output-dir "${COMBINED_DIR}"
 
-echo "Frozen SAM-H full evaluation completed."
+echo "Official STAMP frozen SAM-H evaluation completed."
 echo "Summary: ${COMBINED_DIR}/combined_summary.md"

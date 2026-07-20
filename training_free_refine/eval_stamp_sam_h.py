@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import importlib
 import json
 import sys
 import time
@@ -67,57 +68,43 @@ def resize_mask(mask: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
     ) > 0
 
 
-def compute_sam_logits(mask: np.ndarray, resize_longest_side, eps: float = 1e-3) -> np.ndarray:
-    probability = np.where(mask, 1.0 - eps, eps).astype(np.float32)
-    logits = np.log(probability / (1.0 - probability))
-    logits = resize_longest_side(256).apply_image(logits[..., None])
-    logits = np.asarray(logits)
-    if logits.ndim == 3:
-        logits = logits.squeeze(-1)
-    pad_height = 256 - logits.shape[0]
-    pad_width = 256 - logits.shape[1]
-    if pad_height < 0 or pad_width < 0:
-        raise ValueError(f"SAM low-resolution prompt exceeds 256x256: {logits.shape}")
-    logits = np.pad(logits, ((0, pad_height), (0, pad_width)), constant_values=0)
-    return logits[None].astype(np.float32)
-
-
-def deterministic_points(
-    mask: np.ndarray, count: int, seed: int
-) -> tuple[np.ndarray, np.ndarray]:
-    rng = np.random.default_rng(seed)
-    coordinates: list[np.ndarray] = []
-    labels: list[np.ndarray] = []
-    for value, label in ((True, 1), (False, 0)):
-        yx = np.argwhere(mask == value)
-        if yx.size == 0:
-            continue
-        selected = rng.choice(len(yx), size=min(count, len(yx)), replace=False)
-        xy = yx[selected][:, [1, 0]].astype(np.float32)
-        coordinates.append(xy)
-        labels.append(np.full(len(xy), label, dtype=np.int32))
-    if not coordinates:
-        raise ValueError("Cannot sample SAM prompts from an empty image domain.")
-    return np.concatenate(coordinates), np.concatenate(labels)
-
-
-def stable_sample_seed(base_seed: int, name: str, branch: str) -> int:
-    digest = hashlib.blake2b(f"{name}:{branch}".encode("utf-8"), digest_size=8).digest()
+def stable_sample_seed(base_seed: int, name: str) -> int:
+    """Return one paired seed for coarse and FreeRef prompts of the same sample."""
+    digest = hashlib.blake2b(name.encode("utf-8"), digest_size=8).digest()
     return (base_seed + int.from_bytes(digest, "little")) % (2**32)
 
 
 def sam_refine(
     predictor,
-    resize_longest_side,
+    compute_logits_from_mask,
+    masks_sample_points,
     mask: np.ndarray,
-    point_count: int,
     cascade_steps: int,
     seed: int,
 ) -> np.ndarray:
     if not mask.any():
         return np.zeros_like(mask, dtype=bool)
-    logits = compute_sam_logits(mask, resize_longest_side)
-    point_coords, point_labels = deterministic_points(mask, point_count, seed)
+
+    # Match STAMP's released SAM-H protocol exactly. In particular, STAMP first
+    # resizes/pads the hard mask and only then converts it to SAM mask logits.
+    logits = compute_logits_from_mask(mask.astype(np.float32))
+    if logits.shape != (1, 256, 256) or not np.isfinite(logits).all():
+        raise ValueError(f"Official STAMP SAM mask prompt is invalid: {logits.shape}")
+
+    # The official helper uses torch.randperm. Preserve global RNG state while
+    # making the paired coarse/FreeRef comparison reproducible.
+    numpy_state = np.random.get_state()
+    torch_state = torch.random.get_rng_state()
+    try:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        point_coords, point_labels = masks_sample_points(
+            torch.from_numpy(mask.astype(np.float32))
+        )
+    finally:
+        np.random.set_state(numpy_state)
+        torch.random.set_rng_state(torch_state)
+
     sam_mask, _, low_res_logits = predictor.predict(
         point_coords=point_coords,
         point_labels=point_labels,
@@ -168,22 +155,33 @@ def save_visualization(
 
 
 def load_sam(stamp_code_dir: Path, sam_path: Path):
-    code_dir = str(stamp_code_dir.resolve())
+    resolved_code_dir = stamp_code_dir.resolve()
+    code_dir = str(resolved_code_dir)
     if code_dir not in sys.path:
         sys.path.insert(0, code_dir)
     from model.segment_anything import SamPredictor, sam_model_registry  # type: ignore[import-not-found]
-    from model.segment_anything.utils.transforms import ResizeLongestSide  # type: ignore[import-not-found]
+
+    official_utils = importlib.import_module("eval.utils")
+    utils_path = Path(official_utils.__file__).resolve()
+    if resolved_code_dir not in utils_path.parents:
+        raise ImportError(
+            f"Expected STAMP eval.utils under {resolved_code_dir}, imported {utils_path} instead."
+        )
+    compute_logits_from_mask = official_utils.compute_logits_from_mask
+    masks_sample_points = official_utils.masks_sample_points
 
     sam = sam_model_registry["vit_h"](checkpoint=str(sam_path))
     sam = sam.to(dtype=torch.float32, device="cuda")
     sam.eval()
-    return SamPredictor(sam), ResizeLongestSide
+    return SamPredictor(sam), compute_logits_from_mask, masks_sample_points, utils_path
 
 
 def main() -> int:
     args = parse_args()
-    if args.limit < 0 or args.point_count <= 0 or args.cascade_steps < 0:
-        raise ValueError("limit/cascade-steps must be non-negative and point-count must be positive.")
+    if args.limit < 0 or args.cascade_steps < 0:
+        raise ValueError("limit and cascade-steps must be non-negative.")
+    if args.point_count != 10:
+        raise ValueError("The released STAMP SAM-H protocol requires exactly 10 points per class.")
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for SAM-H evaluation.")
     if not args.sam_path.is_file() or args.sam_path.stat().st_size < 2_000_000_000:
@@ -215,7 +213,9 @@ def main() -> int:
         threshold=args.threshold,
     )
     refiner = TrainingFreeUncertaintyRefiner(config)
-    predictor, resize_longest_side = load_sam(args.stamp_code_dir, args.sam_path)
+    predictor, compute_logits_from_mask, masks_sample_points, official_utils_path = load_sam(
+        args.stamp_code_dir, args.sam_path
+    )
 
     variants = ("coarse", "freeref", "coarse_sam", "freeref_sam")
     totals = {name: {"intersection": 0, "union": 0, "mean_iou": 0.0, "boundary": 0.0} for name in variants}
@@ -269,24 +269,25 @@ def main() -> int:
                     timings["sam_image_seconds"] = time.perf_counter() - start
                 torch.cuda.synchronize()
                 start = time.perf_counter()
+                prompt_seed = stable_sample_seed(args.seed, stem)
                 if need_coarse_sam:
                     coarse_sam = sam_refine(
                         predictor,
-                        resize_longest_side,
+                        compute_logits_from_mask,
+                        masks_sample_points,
                         coarse,
-                        args.point_count,
                         args.cascade_steps,
-                        stable_sample_seed(args.seed, stem, "coarse"),
+                        prompt_seed,
                     )
                     save_mask(paths["coarse_sam"], coarse_sam)
                 if need_freeref_sam:
                     freeref_sam = sam_refine(
                         predictor,
-                        resize_longest_side,
+                        compute_logits_from_mask,
+                        masks_sample_points,
                         freeref,
-                        args.point_count,
                         args.cascade_steps,
-                        stable_sample_seed(args.seed, stem, "freeref"),
+                        prompt_seed,
                     )
                     save_mask(paths["freeref_sam"], freeref_sam)
                 torch.cuda.synchronize()
@@ -357,15 +358,23 @@ def main() -> int:
         "model": args.model_label,
         "split": args.split_name,
         "samples": count,
-        "protocol": "frozen SAM-H; deterministic foreground/background points + mask prompt + two cascade passes",
-        "note": "This is prompt-based frozen SAM-H refinement, not a trained mask decoder.",
+        "protocol": "stamp_official_frozen_sam_h_v1",
+        "note": (
+            "Uses STAMP eval.utils.compute_logits_from_mask and masks_sample_points, "
+            "followed by the released initial SAM prediction and two cascade passes. "
+            "The STAMP and FreeRef branches use the same per-sample RNG seed."
+        ),
         "sam_checkpoint": str(args.sam_path),
+        "official_stamp_utils": str(official_utils_path),
         "sam_failures_with_input_fallback": failure_count,
         "config": asdict(config),
         "sam_config": {
-            "point_count_per_class": args.point_count,
+            "point_count_per_class": 10,
             "cascade_steps": args.cascade_steps,
             "seed": args.seed,
+            "paired_seed_between_branches": True,
+            "mask_logit_implementation": "STAMP/eval/utils.py:compute_logits_from_mask",
+            "point_implementation": "STAMP/eval/utils.py:masks_sample_points",
         },
         "rows_csv": str(rows_path),
     }
@@ -380,6 +389,16 @@ def main() -> int:
         summary[f"{branch}_degraded_samples"] = sum(float(row[f"{branch}_iou"]) < float(row[f"{baseline}_iou"]) - 1e-12 for row in rows)
     summary["combined_mean_iou_delta_vs_coarse"] = float(summary["freeref_sam_mean_iou"]) - float(summary["coarse_mean_iou"])
     summary["combined_cIoU_delta_vs_coarse"] = float(summary["freeref_sam_cIoU"]) - float(summary["coarse_cIoU"])
+    summary["target_ordering_mean_iou"] = (
+        float(summary["coarse_mean_iou"])
+        < float(summary["freeref_mean_iou"])
+        < float(summary["freeref_sam_mean_iou"])
+    )
+    summary["target_ordering_cIoU"] = (
+        float(summary["coarse_cIoU"])
+        < float(summary["freeref_cIoU"])
+        < float(summary["freeref_sam_cIoU"])
+    )
     summary["seconds_per_sample"] = sum(
         float(row["freeref_seconds"]) + float(row["sam_image_seconds"]) + float(row["sam_prompt_seconds"])
         for row in rows
