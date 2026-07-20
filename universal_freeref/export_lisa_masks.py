@@ -21,7 +21,10 @@ from training_free_refine.data import ReferringSegDataset, extract_target_text
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Export official LISA SAM-decoder logits on the flat STAMP evaluation JSON."
+        description=(
+            "Export LISA SAM-decoder logits on the flat STAMP evaluation JSON. "
+            "This paired protocol is not the official REFER paper-reproduction protocol."
+        )
     )
     parser.add_argument("--lisa-code-dir", type=Path, required=True)
     parser.add_argument("--model-path", type=Path, required=True)
@@ -136,6 +139,7 @@ def _manifest_row(
         "pred_mask": str(paths["mask"]),
         "query": extract_target_text({}, record.user_text),
         "protocol": "official_teacher_forced_seg_token",
+        "data_protocol": "stamp_flat_json_not_paper_reproduction",
     }
 
 
@@ -361,6 +365,8 @@ def main() -> int:
 
     report = {
         "source": "official_lisa_teacher_forced_seg_token",
+        "data_protocol": "stamp_flat_json_not_paper_reproduction",
+        "paper_reproduction": False,
         "samples": len(rows),
         "model": str(model_path),
         "vision_tower": str(vision_tower_path),

@@ -20,6 +20,11 @@ from universal_freeref.export_lisa_freeref_prompt import (
     probability_to_sam_mask_input,
 )
 from universal_freeref.evaluate_lisa_freeref_prompt import summarize_rows
+from universal_freeref.eval_lisa_paper_protocol import (
+    EXPECTED_EXPRESSIONS,
+    PAPER_CIOU,
+    official_lisa_metric_totals,
+)
 from universal_freeref.io import load_probability
 from universal_freeref.schema import ManifestItem
 
@@ -91,6 +96,7 @@ def test_lisa_manifest_preserves_soft_logits_for_freeref(tmp_path: Path) -> None
     row = _manifest_row(dataset, 0, output, "LISA-7B-v1", "refcoco_testA")
     assert row["prediction_kind"] == "logits"
     assert row["array_key"] == "logits"
+    assert row["data_protocol"] == "stamp_flat_json_not_paper_reproduction"
     item = ManifestItem.from_mapping(row, tmp_path / "manifest.jsonl", 1)
     probability, uncertainty = load_probability(item, (8, 12))
     assert probability.shape == (8, 12)
@@ -180,3 +186,35 @@ def test_lisa_freeref_prompt_runner_is_offline_and_defaults_to_smoke_test() -> N
     assert "LISA_PROMPT_LIMIT:-16" in text
     assert "universal_freeref.export_lisa_freeref_prompt" in text
     assert "universal_freeref.evaluate_lisa_freeref_prompt" in text
+
+
+def test_lisa_official_metric_matches_foreground_ciou_and_mean_iou() -> None:
+    predictions = [
+        np.asarray([[1, 1], [0, 0]], dtype=bool),
+        np.asarray([[0, 0], [0, 0]], dtype=bool),
+    ]
+    targets = [
+        np.asarray([[1, 0], [0, 0]], dtype=bool),
+        np.asarray([[0, 0], [0, 0]], dtype=bool),
+    ]
+    totals = official_lisa_metric_totals(predictions, targets)
+    assert totals["intersection"] == 1
+    assert totals["union"] == 2
+    assert np.isclose(totals["giou_sum"] / totals["count"], 0.75)
+    assert np.isclose(totals["intersection"] / totals["union"], 0.5)
+
+
+def test_lisa_paper_protocol_tracks_the_reported_rows_and_full_counts() -> None:
+    assert PAPER_CIOU["base"]["refcoco|unc|testA"] == 76.5
+    assert PAPER_CIOU["finetuned_referseg"]["refcoco|unc|testA"] == 79.1
+    assert EXPECTED_EXPRESSIONS["refcoco|unc|testA"] == 5657
+    assert EXPECTED_EXPRESSIONS["refcocog|umd|test"] == 9602
+
+
+def test_lisa_paper_runner_is_a_baseline_only_reproduction_gate() -> None:
+    text = (ROOT / "run_lisa_paper_reproduction.sh").read_text(encoding="utf-8")
+    assert "eval_lisa_paper_protocol" in text
+    assert "LISA_REQUIRE_PAPER_MATCH:-1" in text
+    assert "HF_HUB_OFFLINE=1" in text
+    assert "universal_freeref.evaluate" not in text
+    assert "FreeRef is intentionally disabled" in text

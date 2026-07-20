@@ -24,6 +24,9 @@ export HF_HOME="${HF_HOME:-${ROOT}/.cache/huggingface}"
 export TOKENIZERS_PARALLELISM=false
 mkdir -p "${ROOT}/code/third_party" "${ROOT}/outputs" "${RESULTS_ROOT}" "${REFINE_ROOT}"
 
+echo "WARNING: this runner uses STAMP flat JSON for paired analysis; it does not reproduce the LISA paper protocol."
+echo "Use run_lisa_paper_reproduction.sh and pass its reproduction gate before paper comparison."
+
 if command -v flock >/dev/null 2>&1; then
   exec 9>"${ROOT}/outputs/.lisa_freeref.lock"
   if ! flock -n 9; then
