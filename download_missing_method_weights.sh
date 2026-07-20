@@ -206,7 +206,14 @@ gdrive_file() {
 
 gdrive_folder() {
   local url="$1" target="$2"
-  "${GDOWN_BIN}" --folder --remaining-ok "${url}" -O "${target}"
+  local args=(--folder)
+  # gdown 5.x provides --remaining-ok, while some server mirrors resolve an
+  # older compatible release. The official folders used here stay below the
+  # old 50-file limit, so omitting the flag is a valid fallback.
+  if "${GDOWN_BIN}" --help 2>&1 | grep -q -- '--remaining-ok'; then
+    args+=(--remaining-ok)
+  fi
+  "${GDOWN_BIN}" "${args[@]}" "${url}" -O "${target}"
 }
 
 download_url_file() {

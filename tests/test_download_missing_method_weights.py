@@ -48,6 +48,7 @@ def test_download_sources_are_official_and_status_is_size_validated():
     assert "validate_artifact" in text
     assert ".freeref_download_complete" in text
     assert "manual_downloads.tsv" in text
+    assert "grep -q -- '--remaining-ok'" in text
 
 
 def test_status_script_reports_processes_disk_artifacts_and_manual_queue():
