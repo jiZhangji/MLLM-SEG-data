@@ -49,6 +49,9 @@ def test_download_sources_are_official_and_status_is_size_validated():
     assert ".freeref_download_complete" in text
     assert "manual_downloads.tsv" in text
     assert "grep -q -- '--remaining-ok'" in text
+    assert "drive.usercontent.google.com" in text
+    assert "seafile_share_files" in text
+    assert "cloud.tsinghua.edu.cn" in text
 
 
 def test_status_script_reports_processes_disk_artifacts_and_manual_queue():

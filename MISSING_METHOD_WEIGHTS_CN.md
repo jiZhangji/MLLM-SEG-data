@@ -55,7 +55,7 @@ tail -n 100 -F /inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/
 - `download_plan.tsv`：所有官方来源、目标目录和模型名称。
 - `weights_inventory.tsv`：已下载文件的大小与绝对路径。
 
-下载脚本使用“完成标记 + 大文件校验”，不会把网盘返回的 HTML 页面误判为模型权重。SharePoint/OneDrive 文件夹若无法自动导出，会继续下载其他方法，并把准确链接写入人工处理清单。
+下载脚本使用“完成标记 + 大文件校验”，不会把网盘返回的 HTML 页面误判为模型权重。PolyFormer 在 `gdown` 失败时会自动切换到 Google 文件直链；GSVA 使用清华镜像并下载 `gsva-7b-ft-res.bin` 与 `gsva-7b-ft-gres.bin`。
 
 ## 已知限制
 
@@ -63,3 +63,4 @@ tail -n 100 -F /inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/
 2. GSVA-7B 的作者 checkpoint 可以自动下载，但官方 Vicuna-7B 路线还依赖有许可要求的 LLaMA/Vicuna 基座与 LLaVA delta 合并。脚本下载公开 delta，并在人工清单中保留基座合并步骤。
 3. `DOWNLOAD_DATASETS=0` 是默认值，脚本只下载模型权重。设置 `DOWNLOAD_DATASETS=1` 才会额外下载 Seg-Zero 与 SegAgent 发布的数据文件。
 4. 下载完成只代表权重就绪；各官方仓库仍需独立环境和输出适配器，之后才能生成统一 Manifest 并进行 paired FreeRef 前后对比。
+5. UNINEXT-L 的作者 SharePoint 链接当前返回 HTTP 403；SegAgent 所需的 SimpleClick 官方文件夹当前返回 HTTP 404。脚本会将二者标记为 `blocked`，若之后手工取得权重，重新运行会校验并接管现有文件。

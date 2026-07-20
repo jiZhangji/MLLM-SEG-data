@@ -201,7 +201,13 @@ hf_dataset_snapshot() {
 
 gdrive_file() {
   local file_id="$1" target="$2"
-  "${GDOWN_BIN}" --fuzzy --continue "https://drive.google.com/file/d/${file_id}/view" -O "${target}"
+  if "${GDOWN_BIN}" --fuzzy --continue "https://drive.google.com/file/d/${file_id}/view" -O "${target}"; then
+    return 0
+  fi
+  log "gdown failed for ${file_id}; retrying through drive.usercontent.google.com"
+  download_url_file \
+    "https://drive.usercontent.google.com/download?id=${file_id}&export=download&confirm=t" \
+    "${target}"
 }
 
 gdrive_folder() {
@@ -260,6 +266,103 @@ if not zipfile.is_zipfile(archive):
 with zipfile.ZipFile(archive) as bundle:
     bundle.extractall(target)
 PY
+}
+
+seafile_share_files() {
+  local base_url="$1" token="$2" target="$3" filenames="$4"
+  SEAFILE_BASE_URL="${base_url}" SEAFILE_TOKEN="${token}" \
+    SEAFILE_TARGET="${target}" SEAFILE_FILENAMES="${filenames}" \
+    "${TOOLS_PY}" - <<'PY'
+import os
+from pathlib import Path
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+base_url = os.environ["SEAFILE_BASE_URL"].rstrip("/")
+token = os.environ["SEAFILE_TOKEN"]
+target = Path(os.environ["SEAFILE_TARGET"])
+wanted = set(os.environ["SEAFILE_FILENAMES"].split())
+target.mkdir(parents=True, exist_ok=True)
+
+retry = Retry(
+    total=10,
+    connect=10,
+    read=10,
+    status=10,
+    backoff_factor=2,
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset({"GET", "HEAD"}),
+)
+session = requests.Session()
+session.mount("https://", HTTPAdapter(max_retries=retry))
+
+listing_url = f"{base_url}/api/v2.1/share-links/{token}/dirents/"
+listing = session.get(listing_url, params={"path": "/"}, timeout=(30, 300))
+listing.raise_for_status()
+items = {
+    item["file_name"]: item
+    for item in listing.json().get("dirent_list", [])
+    if not item.get("is_dir")
+}
+missing = wanted.difference(items)
+if missing:
+    raise RuntimeError(f"Files missing from public Seafile share: {sorted(missing)}")
+
+for name in sorted(wanted):
+    item = items[name]
+    destination = target / name
+    expected = int(item["size"])
+    existing = destination.stat().st_size if destination.exists() else 0
+    if existing == expected:
+        print(f"Already complete: {destination}")
+        continue
+    if existing > expected:
+        destination.unlink()
+        existing = 0
+
+    headers = {"Range": f"bytes={existing}-"} if existing else {}
+    file_url = f"{base_url}/d/{token}/files/"
+    with session.get(
+        file_url,
+        params={"p": item["file_path"], "dl": "1"},
+        headers=headers,
+        stream=True,
+        timeout=(30, 600),
+    ) as response:
+        response.raise_for_status()
+        append = existing > 0 and response.status_code == 206
+        mode = "ab" if append else "wb"
+        with destination.open(mode) as output:
+            for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+                if chunk:
+                    output.write(chunk)
+
+    actual = destination.stat().st_size
+    if actual != expected:
+        raise RuntimeError(
+            f"Incomplete Seafile download for {name}: expected {expected}, got {actual}"
+        )
+    print(f"Downloaded: {destination} ({actual} bytes)")
+PY
+}
+
+block_or_adopt_artifact() {
+  local method="$1" artifact="$2" kind="$3" target="$4" source="$5" reason="$6"
+  local marker
+  marker="$(marker_for "${kind}" "${target}")"
+  record_plan "${method}" "${artifact}" "${target}" "${source}"
+
+  if validate_artifact "${kind}" "${target}"; then
+    [[ "${DRY_RUN}" == "1" ]] || touch "${marker}"
+    record_status "${method}" "${artifact}" complete "${target}" "${source}" \
+      "existing manually supplied weight files passed validation"
+    return 0
+  fi
+
+  record_status "${method}" "${artifact}" blocked "${target}" "${source}" "${reason}"
+  record_manual "${method}" "${artifact}" "${target}" "${source}" "${reason}"
 }
 
 modelscope_snapshot() {
@@ -376,15 +479,10 @@ fi
 
 if selected uninext; then
   uninext_url='https://maildluteducn-my.sharepoint.com/:f:/g/personal/yan_bin_mail_dlut_edu_cn/Et6GBDgKgPZDn5zp49yKwDYBd50EBTxaKs7R6Yuck_lf7g?e=818rMm'
-  if ! run_artifact uninext image-joint-convnext-large dir \
-    "${WEIGHTS_ROOT}/uninext/image_joint_convnext_large" "${uninext_url}" \
-    onedrive_folder "${uninext_url}" \
+  block_or_adopt_artifact uninext image-joint-convnext-large dir \
     "${WEIGHTS_ROOT}/uninext/image_joint_convnext_large" \
-    "${WEIGHTS_ROOT}/uninext/image_joint_convnext_large.zip"; then
-    record_manual uninext image-joint-convnext-large \
-      "${WEIGHTS_ROOT}/uninext/image_joint_convnext_large" "${uninext_url}" \
-      "SharePoint folder could not be exported automatically; download the Stage-2 ConvNeXt-Large folder"
-  fi
+    "${uninext_url}" \
+    "The official Stage-2 ConvNeXt-Large SharePoint link currently returns HTTP 403" || true
 fi
 
 if selected pixellm; then
@@ -404,15 +502,16 @@ if selected lisa; then
 fi
 
 if selected gsva; then
-  gsva_url='https://1drv.ms/f/s!ApI0vb6wPqmtku1kOKbVTJkwa6jG_Q?e=vaG9Gj'
+  gsva_url='https://cloud.tsinghua.edu.cn/d/1423fb16fdb9445e8155/'
   if ! run_artifact gsva official-7b-checkpoints dir \
     "${WEIGHTS_ROOT}/gsva/official_checkpoints" "${gsva_url}" \
-    onedrive_folder "${gsva_url}" \
+    seafile_share_files 'https://cloud.tsinghua.edu.cn' \
+    1423fb16fdb9445e8155 \
     "${WEIGHTS_ROOT}/gsva/official_checkpoints" \
-    "${WEIGHTS_ROOT}/gsva/official_checkpoints.zip"; then
+    'gsva-7b-ft-res.bin gsva-7b-ft-gres.bin'; then
     record_manual gsva official-7b-checkpoints \
       "${WEIGHTS_ROOT}/gsva/official_checkpoints" "${gsva_url}" \
-      'OneDrive folder export failed; use the official Tsinghua mirror: https://cloud.tsinghua.edu.cn/d/1423fb16fdb9445e8155/'
+      'The official Tsinghua mirror failed; rerun to resume both 7B checkpoint files'
   fi
   run_artifact gsva llava-lightning-7b-delta dir \
     "${WEIGHTS_ROOT}/gsva/LLaVA-Lightning-7B-delta-v1-1" \
@@ -469,14 +568,9 @@ if selected segagent; then
     "${WEIGHTS_ROOT}/segagent/SegAgent-Model" || true
 
   simpleclick_url='https://drive.google.com/drive/folders/1qpK0gtAPkVMF7VC42UA9XF4xMWr5KJmL?usp=sharing'
-  if ! run_artifact segagent simpleclick-models dir \
+  block_or_adopt_artifact segagent simpleclick-models dir \
     "${WEIGHTS_ROOT}/segagent/simpleclick_models" "${simpleclick_url}" \
-    gdrive_folder "${simpleclick_url}" \
-    "${WEIGHTS_ROOT}/segagent/simpleclick_models"; then
-    record_manual segagent simpleclick-models \
-      "${WEIGHTS_ROOT}/segagent/simpleclick_models" "${simpleclick_url}" \
-      'Download the official folder and ensure cocolvis_vit_large.pth is present'
-  fi
+    'The official SimpleClick Google Drive folder currently returns HTTP 404; cocolvis_vit_large.pth is unavailable' || true
 
   if [[ "${DOWNLOAD_DATASETS}" == "1" ]]; then
     run_artifact segagent segagent-dataset dir \
