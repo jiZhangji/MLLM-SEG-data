@@ -1,64 +1,63 @@
 # Text4Seg 配置对齐说明
 
-## 结论
+## 核心结论
 
-当前已经完成的 Text4Seg RefCOCOg val/test 实验使用
-`lmc22/text4seg-llava-7b-p24`。这是作者用于快速演示的
-LLaVA-1.5/Vicuna-7B checkpoint；`p24` 表示输出为 `24 x 24 = 576` 个语义描述符，
-不是 24 个视觉 token。它不能作为论文表格中任意一行的严格复现。
+当前已经完成的 Text4Seg RefCOCOg val/test 实验使用公开 checkpoint
+`lmc22/text4seg-llava-7b-p24`。`p24` 表示输出为 `24 x 24 = 576` 个语义描述符，
+不是 24 个视觉输入 token。该权重是作者用于演示的混合数据 checkpoint，不能作为
+STAMP 表格中任一 Text4Seg 行的严格复现。
 
-Text4Seg 论文默认使用 `16 x 16 = 256` 个语义描述符（`p16`），并在消融中测试
-`p24` 和 `p32`。论文表格中的 Text4Seg 行并非同一设置：
+作者 OneDrive 中公开的 `llava-v1.5-7b-p16.zip` 对应 Text4Seg 论文 Table 4
+的描述符分辨率/后处理实验。它可用于同一公开权重上的配对研究，但也不是 STAMP
+截图 Table 1 所使用的训练权重。
 
-| 截图中的行 | 论文中的实际设置 |
+STAMP 截图中的 Text4Seg 行来自 Text4Seg Table 1，实际混合了不同模型和后处理：
+
+| STAMP 表格中的行 | Text4Seg 实际配置 |
 |---|---|
-| Text4Seg, Vicuna-13B, 74.1/.../70.1 | LLaVA-1.5-13B, p16 + CRF |
-| Text4Seg, InternLM2.5-7B, 74.7/.../71.6 | InternVL2-8B, p32, 无 mask refiner |
-| Text4Seg, Vicuna-7B, 79.3/.../73.9 | LLaVA-1.5-7B, p16 + SAM-H |
-| Text4Seg, InternLM2.5-7B, 79.2/.../75.3 | InternVL2-8B, p16 + SAM-H |
-| Text4Seg, Vicuna-13B, 80.2/.../75.1 | LLaVA-1.5-13B, p16 + SAM-H |
+| Vicuna-13B，decoder-free，Avg. 70.9 | LLaVA-1.5-13B，p16 + CRF |
+| InternLM2.5-7B，decoder-free，Avg. 71.4 | InternVL2-8B，p32，无 refiner |
+| Vicuna-7B，with decoder，Avg. 74.9 | LLaVA-1.5-7B，p16 + SAM-H |
+| InternLM2.5-7B，with decoder，Avg. 75.4 | InternVL2-8B，p16 + SAM-H |
+| Vicuna-13B，with decoder，Avg. 76.2 | LLaVA-1.5-13B，p16 + SAM-H |
 
-因此，与当前 Vicuna-7B 代码路径最容易统一的论文配置是
-**Text4Seg LLaVA-1.5-7B-p16**。论文附录给出的同一模型基准为：
+官方 `ms-swift` 推理脚本引用的是作者机器上的本地训练目录，例如 LLaVA-1.5-7B
+的 `checkpoint-33930`。截至 2026-07-20，作者仓库、Hugging Face 与公开 OneDrive
+均未提供这些 Table 1 merged checkpoint/LoRA adapter。因此，目前不存在一个可直接
+下载并严格复现 STAMP 截图 Text4Seg 数值的公开权重。
 
-| Refiner | RefCOCO val/testA/testB | RefCOCO+ val/testA/testB | RefCOCOg val/test | Avg. |
-|---|---|---|---|---:|
-| None | 70.5 / 72.3 / 69.3 | 64.4 / 68.7 / 60.6 | 65.1 / 66.5 | 67.2 |
-| CRF | 73.2 / 75.7 / 71.4 | 67.0 / 71.9 / 62.4 | 67.3 / 68.9 | 69.7 |
-| SAM-H | 79.3 / 81.9 / 76.2 | 72.1 / 77.6 / 66.1 | 72.1 / 73.9 | 74.9 |
+## 当前运行器的准确用途
 
-## 本项目如何避免再混淆
-
-`training_free_refine.export_text4seg_masks` 现在使用
-`--descriptor-grid-size`，并根据 checkpoint 路径中的 `p16/p24/p32` 强制校验。
-例如，p24 checkpoint 配置成 p16 会直接退出，不再静默产生不可解释的结果。
-旧参数 `--visual-tokens` 仅为兼容保留。
-
-完整 p16 配对评测入口为：
+`training_free_refine.export_text4seg_masks` 使用显式参数
+`--descriptor-grid-size`，并根据 checkpoint 路径中的 `p16/p24/p32` 校验配置。
+例如，p24 checkpoint 配置成 p16 会直接退出。旧参数 `--visual-tokens` 仅为兼容保留。
 
 ```bash
 bash run_text4seg_llava7b_p16_full_eval.sh
 ```
 
-它只接受本地 `llava-v1.5-7b-p16` checkpoint，并对 RefCOCO、RefCOCO+、
-RefCOCOg 的八个 split 串行计算 Text4Seg、Text4Seg + FreeRef 及独立 SAM 对照。
-脚本以 `TEXT4SEG_SETUP_MODE=offline` 调用底层评测；正式运行阶段不会克隆代码、
-下载权重或安装 Python 包，缺少任何依赖都会在推理前退出。
-该入口统一了模型族和描述符分辨率，但仍使用本项目的配对 flat JSON；只有先通过
-作者官方 REFER loader 的基线复现门槛，结果才可写成“复现论文数值”。
+该入口只接受本地 LLaVA-1.5-7B-p16 checkpoint，并在 RefCOCO、RefCOCO+、
+RefCOCOg 八个 split 上计算 Text4Seg、Text4Seg + FreeRef 和独立 SAM-H 对照。
+它使用本项目的配对 flat JSON。即使输入作者公开的 Table 4 p16 权重，结果也必须标为
+“released p16 paired evaluation”，不能标为“STAMP Table 1 reproduction”。
 
-## 权重来源边界
-
-作者官方仓库把 p16 checkpoints 放在 OneDrive，而 Hugging Face 公开的
-`lmc22/text4seg-llava-7b-p24` 是混合数据训练的演示 checkpoint。二者不可互换。
-下载应与评测命令分开完成，并将官方 p16 权重放到：
-
-```text
-models/Text4Seg/llava-v1.5-7b-p16/
-```
-
-然后用以下命令检查八个 split 的状态：
+状态检查：
 
 ```bash
 bash check_text4seg_llava7b_p16_status.sh
 ```
+
+## 如何得到与 STAMP 表格相同的配置
+
+有且只有两条可靠路径：
+
+1. 向 Text4Seg 作者申请 Table 1 的 merged checkpoint 或 LoRA adapter、对应
+   `ms-swift` commit 和评测命令。若复现 Vicuna-7B + SAM-H 行，应申请
+   LLaVA-1.5-7B p16 的 `checkpoint-33930`。
+2. 使用官方训练脚本和数据重新训练。LLaVA-1.5-7B p16 的公开训练设置为 LoRA
+   rank 64、global batch 128、5 epochs、学习率 `2e-4`，原论文使用 8 张 A800-40GB。
+   单张 H100-80GB 可通过梯度累积保持 global batch，但训练结果不保证逐点等于论文。
+
+在拿到或重训出 Table 1 权重之前，论文表格应将“原论文报告值”与“公开 checkpoint
+配对结果”分成两个区块，不能把 p24/p16 Table 4 本地结果与 Table 1 数值写成同协议
+的前后比较。

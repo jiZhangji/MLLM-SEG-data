@@ -91,18 +91,19 @@ The released Text4Seg checkpoint records the author's relative CLIP path; the
 runner maps it to the equivalent Hugging Face identifier
 `openai/clip-vit-large-patch14-336` before model construction.
 
-For the paper-aligned LLaVA-1.5/Vicuna-7B p16 model family, place the official
-p16 checkpoint locally and run:
+For the released LLaVA-1.5/Vicuna-7B p16 Table-4 checkpoint family, place the
+checkpoint locally and run:
 
 ```bash
 bash run_text4seg_llava7b_p16_full_eval.sh
 ```
 
 The exporter validates that the configured descriptor grid agrees with the
-checkpoint's `p16`, `p24`, or `p32` suffix. See
-`TEXT4SEG_CONFIG_ALIGNMENT_CN.md` for the exact paper-row mapping and the
-remaining distinction between paired flat-JSON evaluation and an official
-REFER-loader reproduction.
+checkpoint's `p16`, `p24`, or `p32` suffix. The released p16 checkpoint is not
+the private ms-swift checkpoint used for the Text4Seg Table-1 rows copied by
+STAMP. See `TEXT4SEG_CONFIG_ALIGNMENT_CN.md` for the exact row mapping and the
+distinction between a released-checkpoint paired evaluation and a Table-1
+reproduction.
 
 ## Publication-quality visualization
 

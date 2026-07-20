@@ -19,8 +19,8 @@ if [[ ! -d "${TEXT4SEG_DIR}/llava" ]]; then
   exit 1
 fi
 if [[ ! -d "${MODEL_PATH}" || ! -f "${MODEL_PATH}/config.json" ]]; then
-  echo "ERROR: the official LLaVA-1.5-7B-p16 checkpoint is missing: ${MODEL_PATH}" >&2
-  echo "The public p24 demo checkpoint is not a substitute for this paper configuration." >&2
+  echo "ERROR: the released LLaVA-1.5-7B-p16 Table-4 checkpoint is missing: ${MODEL_PATH}" >&2
+  echo "The public p24 demo checkpoint is not a substitute for this p16 paired evaluation." >&2
   exit 1
 fi
 if [[ "${MODEL_PATH,,}" != *p16* ]]; then
@@ -68,9 +68,9 @@ conda run --no-capture-output -n "${TEXT4SEG_CONDA_ENV:-text4seg-tf}" \
   python -m training_free_refine.summarize_splits \
   "${SUMMARY_ARGS[@]}" \
   --output-dir "${COMBINED_OUTPUT}" \
-  --title "Text4Seg LLaVA-1.5-7B p16 + FreeRef paired evaluation"
+  --title "Text4Seg released LLaVA-1.5-7B p16 + FreeRef paired evaluation"
 
 echo "Text4Seg p16 paired evaluation completed."
 echo "Summary: ${COMBINED_OUTPUT}/combined_summary.md"
-echo "NOTE: this runner matches the paper checkpoint/grid family but uses paired flat JSON inputs."
-echo "Paper-row claims still require the official REFER-loader baseline reproduction gate."
+echo "NOTE: this runner targets the released Table-4 p16 checkpoint and paired flat JSON inputs."
+echo "It does not reproduce the private ms-swift checkpoint used by the STAMP/Table-1 row."
