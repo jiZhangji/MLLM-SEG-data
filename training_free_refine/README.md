@@ -101,6 +101,12 @@ bash check_text4seg_public_p24_status.sh
 
 These results are a public-checkpoint paired transfer experiment, not a
 reproduction of the private ms-swift checkpoints used in Text4Seg Table 1.
+The full runner reports four branches: Text4Seg, Text4Seg + FreeRef,
+Text4Seg + frozen SAM-H, and Text4Seg + FreeRef + frozen SAM-H. It defaults to
+four concurrent split workers on one large-memory GPU. Set
+`TEXT4SEG_P24_PARALLEL_JOBS=2` if four model replicas exceed available memory.
+Each worker writes a separate log below
+`outputs/text4seg_public_p24_worker_logs/`.
 
 For the released LLaVA-1.5/Vicuna-7B p16 Table-4 checkpoint family, place the
 checkpoint locally and run:

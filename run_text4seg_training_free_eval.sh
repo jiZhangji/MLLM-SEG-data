@@ -43,9 +43,10 @@ export TOKENIZERS_PARALLELISM=false
 mkdir -p "${ROOT}/code" "${ROOT}/models" "${ROOT}/outputs" "${HF_HOME}" "$(dirname "${SAM_PATH}")"
 
 if command -v flock >/dev/null 2>&1; then
-  exec 9>"${ROOT}/outputs/.text4seg_training_free.lock"
+  LOCK_KEY="$(basename "${RESULTS_ROOT}" | tr -c 'A-Za-z0-9._-' '_')"
+  exec 9>"${ROOT}/outputs/.text4seg_training_free.${LOCK_KEY}.lock"
   if ! flock -n 9; then
-    echo "Another Text4Seg training-free job already holds the lock." >&2
+    echo "Another Text4Seg job already holds the lock for ${RESULTS_ROOT}." >&2
     exit 0
   fi
 fi
