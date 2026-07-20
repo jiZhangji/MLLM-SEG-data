@@ -218,3 +218,19 @@ def test_lisa_paper_runner_is_a_baseline_only_reproduction_gate() -> None:
     assert "HF_HUB_OFFLINE=1" in text
     assert "universal_freeref.evaluate" not in text
     assert "FreeRef is intentionally disabled" in text
+
+
+def test_lisa_paper_data_preparation_uses_links_without_downloads() -> None:
+    text = (ROOT / "prepare_lisa_paper_data.sh").read_text(encoding="utf-8")
+    assert "ln -s" in text
+    assert "data/lisa_paper_refer_seg" in text
+    assert "curl " not in text
+    assert "wget " not in text
+
+
+def test_lisa_paper_freeref_runner_keeps_the_reproduction_gate() -> None:
+    text = (ROOT / "run_lisa_paper_freeref_eval.sh").read_text(encoding="utf-8")
+    assert "LISA_REQUIRE_PAPER_MATCH=1" in text
+    assert "paper_match" in text
+    assert "universal_freeref.evaluate" in text
+    assert "waiting 10 seconds" in text

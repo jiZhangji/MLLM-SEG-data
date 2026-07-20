@@ -27,6 +27,14 @@ LISA 官方数据根目录必须具有以下布局：
 └── images/mscoco/images/train2014/*.jpg
 ```
 
+服务器上的三类输入若分散在不同目录，可直接运行：
+
+```bash
+bash prepare_lisa_paper_data.sh
+```
+
+脚本只在 `data/lisa_paper_refer_seg` 下创建软链接，不复制 COCO 图片，也不下载数据。
+
 服务器还需要：
 
 ```text
@@ -86,3 +94,19 @@ outputs/lisa_paper_reproduction/<split>/gt_masks/*.png
 ```
 
 `manifest.jsonl` 是第二阶段 FreeRef 的唯一输入。只有 `paper_match=true` 后才继续第二阶段。
+
+## 严格基线门控后的 FreeRef 评测
+
+以下脚本先等待至少 30 GB 空闲显存，严格复现论文基线；仅当全量样本数正确且
+`paper_match=true` 时，才对同一次运行导出的 logits 应用 FreeRef：
+
+```bash
+CUDA_DEVICE=0 nohup bash run_lisa_paper_freeref_eval.sh \
+  > ../outputs/lisa_paper_freeref.log 2>&1 < /dev/null &
+```
+
+查看状态：
+
+```bash
+bash check_lisa_paper_freeref_status.sh
+```

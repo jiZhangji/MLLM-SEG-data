@@ -27,14 +27,9 @@ export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
 
 if [[ -z "${LISA_PAPER_DATA_ROOT:-}" ]]; then
-  refs_path="$(find "${ROOT}" -maxdepth 9 -type f -path '*/refcoco/refs(unc).p' -print -quit 2>/dev/null || true)"
-  if [[ -n "${refs_path}" ]]; then
-    LISA_PAPER_DATA_ROOT="$(dirname "$(dirname "${refs_path}")")"
-  else
-    echo "ERROR: official refs(unc).p was not found below ${ROOT}." >&2
-    echo "Set LISA_PAPER_DATA_ROOT to the directory containing refcoco/, refcoco+/, refcocog/, and images/." >&2
-    exit 2
-  fi
+  LISA_PAPER_DATA_ROOT="${ROOT}/data/lisa_paper_refer_seg"
+  LISA_PAPER_DATA_ROOT="${LISA_PAPER_DATA_ROOT}" \
+    bash "${SCRIPT_DIR}/prepare_lisa_paper_data.sh"
 fi
 DATA_ROOT="$(cd "${LISA_PAPER_DATA_ROOT}" && pwd)"
 
