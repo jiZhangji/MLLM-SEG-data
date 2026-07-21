@@ -567,14 +567,17 @@ if selected segagent; then
     modelscope_snapshot zzzmmz/SegAgent-Model \
     "${WEIGHTS_ROOT}/segagent/SegAgent-Model" || true
 
-  simpleclick_url='https://drive.google.com/drive/folders/1qpK0gtAPkVMF7VC42UA9XF4xMWr5KJmL?usp=sharing'
-  if ! run_artifact segagent simpleclick-models dir \
-    "${WEIGHTS_ROOT}/segagent/simpleclick_models" "${simpleclick_url}" \
-    gdrive_folder "${simpleclick_url}" \
-    "${WEIGHTS_ROOT}/segagent/simpleclick_models"; then
+  # SegAgent vendors an obsolete SimpleClick folder URL. The current upstream
+  # folder exposes this exact COCO+LVIS ViT-L checkpoint.
+  simpleclick_file_id='1AjSGobd0Bq-50RFJfJnotAUWDsYKPC2B'
+  simpleclick_url="https://drive.google.com/file/d/${simpleclick_file_id}/view"
+  simpleclick_target="${WEIGHTS_ROOT}/segagent/simpleclick_models/cocolvis_vit_large.pth"
+  if ! run_artifact segagent simpleclick-models file \
+    "${simpleclick_target}" "${simpleclick_url}" \
+    gdrive_file "${simpleclick_file_id}" "${simpleclick_target}"; then
     record_manual segagent simpleclick-models \
-      "${WEIGHTS_ROOT}/segagent/simpleclick_models" "${simpleclick_url}" \
-      'Official Google Drive download failed; place cocolvis_vit_large.pth in this directory'
+      "${simpleclick_target}" "${simpleclick_url}" \
+      'Official Google Drive download failed; place cocolvis_vit_large.pth at this path'
   fi
 
   if [[ "${DOWNLOAD_DATASETS}" == "1" ]]; then

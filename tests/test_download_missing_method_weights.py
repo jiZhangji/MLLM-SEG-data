@@ -56,7 +56,8 @@ def test_download_sources_are_official_and_status_is_size_validated():
     simpleclick_block = text.split("simpleclick_url=", 1)[1].split(
         'if [[ "${DOWNLOAD_DATASETS}"', 1
     )[0]
-    assert "gdrive_folder" in simpleclick_block
+    assert "1AjSGobd0Bq-50RFJfJnotAUWDsYKPC2B" in text
+    assert "gdrive_file" in simpleclick_block
     assert "block_or_adopt_artifact" not in simpleclick_block
 
 
