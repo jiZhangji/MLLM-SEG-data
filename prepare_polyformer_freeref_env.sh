@@ -26,6 +26,7 @@ echo "Installing the H100/H200-compatible PolyFormer inference runtime into ${CO
   opencv-python-headless==4.10.0.84 Pillow==10.4.0 \
   timm==0.6.13 ftfy==6.0.3 tensorboardX==2.6.2.2 \
   pycocotools==2.0.7 einops==0.8.1 tqdm==4.67.1 \
+  tokenizers==0.13.3 \
   hydra-core==1.0.7 omegaconf==2.0.6 regex sacrebleu==1.5.1 \
   bitarray==2.9.3 cython==0.29.37 cffi
 
@@ -45,8 +46,10 @@ import skimage
 import torch
 import torchvision
 from pathlib import Path
+from bert.tokenization_bert import BertTokenizer
 from fairseq.file_io import PathManager
 from models.polyformer import PolyFormerModel
+from tokenizers import AddedToken
 
 fairseq_path = Path(fairseq.__file__).resolve()
 vendored_root = (Path(os.environ["POLYFORMER_DIR"]) / "fairseq").resolve()

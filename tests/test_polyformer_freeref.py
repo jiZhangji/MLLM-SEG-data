@@ -97,6 +97,9 @@ def test_polyformer_summary_checks_paired_baseline_identity(tmp_path: Path, monk
 
 def test_polyformer_download_and_inference_are_separate() -> None:
     asset_script = (ROOT / "prepare_polyformer_freeref_assets.sh").read_text(encoding="utf-8")
+    environment_script = (ROOT / "prepare_polyformer_freeref_env.sh").read_text(
+        encoding="utf-8"
+    )
     run_script = (ROOT / "run_polyformer_freeref_smoke.sh").read_text(encoding="utf-8")
     assert "download_missing_method_weights.sh" in asset_script
     assert "prepare_polyformer_freeref_env.sh" in asset_script
@@ -106,3 +109,5 @@ def test_polyformer_download_and_inference_are_separate() -> None:
     assert "polyformer_l_refcoco.pt" in run_script
     assert "--paper-miou 78.49" in run_script
     assert '${POLYFORMER_DIR}/fairseq' in run_script
+    assert "tokenizers==0.13.3" in environment_script
+    assert "pip install" not in run_script
