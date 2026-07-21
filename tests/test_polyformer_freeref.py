@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from universal_freeref import summarize_polyformer
+from universal_freeref import prepare_polyformer_eval_data, summarize_polyformer
 from universal_freeref.export_polyformer_masks import (
     _ordered_rows,
     _polygons_from_generation,
@@ -15,6 +15,18 @@ from universal_freeref.export_polyformer_masks import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_polyformer_poly_utils_load_does_not_execute_data_package(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "__init__.py").write_text(
+        "raise RuntimeError('the full data package must not be imported')\n", encoding="utf-8"
+    )
+    module_path = data_dir / "poly_utils.py"
+    module_path.write_text("answer = 42\n", encoding="utf-8")
+    module = prepare_polyformer_eval_data._load_poly_utils(module_path)
+    assert module.answer == 42
 
 
 def test_polyformer_generation_is_rasterized_without_coordinate_quantization() -> None:
@@ -93,3 +105,4 @@ def test_polyformer_download_and_inference_are_separate() -> None:
     assert "prepare_polyformer_freeref_env.sh" not in run_script
     assert "polyformer_l_refcoco.pt" in run_script
     assert "--paper-miou 78.49" in run_script
+    assert '${POLYFORMER_DIR}/fairseq' in run_script

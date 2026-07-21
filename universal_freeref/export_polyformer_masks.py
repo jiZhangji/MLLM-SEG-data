@@ -249,7 +249,9 @@ def main() -> int:
         raise FileNotFoundError("PolyFormer export inputs are incomplete:\n" + "\n".join(missing))
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    sys.path.insert(0, str(code_dir))
+    # PolyFormer vendors its OFA-compatible Fairseq fork. Prefer it over any
+    # unrelated fairseq installation already present in the conda environment.
+    sys.path[:0] = [str(code_dir / "fairseq"), str(code_dir)]
     os.chdir(code_dir)
 
     # The released stack predates NumPy 1.24 and PyTorch 2.6.

@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
+
+
+def _load_poly_utils(module_path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_freeref_polyformer_poly_utils", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load PolyFormer polygon utilities: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,16 +56,16 @@ def main() -> int:
     if missing:
         raise FileNotFoundError("PolyFormer evaluation inputs are incomplete:\n" + "\n".join(missing))
 
+    poly_utils = _load_poly_utils(code_dir / "data" / "poly_utils.py")
+    approximate_polygons = poly_utils.approximate_polygons
+    image_to_base64 = poly_utils.image_to_base64
+    interpolate_polygons = poly_utils.interpolate_polygons
+    is_clockwise = poly_utils.is_clockwise
+    polygons_to_string = poly_utils.polygons_to_string
+    reorder_points = poly_utils.reorder_points
+    revert_direction = poly_utils.revert_direction
+
     sys.path.insert(0, str(code_dir))
-    from data.poly_utils import (  # type: ignore[import-not-found]
-        approximate_polygons,
-        image_to_base64,
-        interpolate_polygons,
-        is_clockwise,
-        polygons_to_string,
-        reorder_points,
-        revert_direction,
-    )
     from refer.refer import REFER  # type: ignore[import-not-found]
 
     refer = REFER(str(refer_root), args.dataset, args.split_by)

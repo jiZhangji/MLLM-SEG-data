@@ -34,14 +34,24 @@ env -u CUDA_HOME MAX_JOBS="${MAX_JOBS:-4}" "${CONDA_BIN}" run -n "${CONDA_ENV}" 
 
 (
   cd "${POLYFORMER_DIR}"
-  PYTHONPATH="${POLYFORMER_DIR}:${PYTHONPATH:-}" "${CONDA_BIN}" run -n "${CONDA_ENV}" python - <<'PY'
+  POLYFORMER_DIR="${POLYFORMER_DIR}" \
+  PYTHONPATH="${POLYFORMER_DIR}/fairseq:${POLYFORMER_DIR}:${PYTHONPATH:-}" \
+  "${CONDA_BIN}" run -n "${CONDA_ENV}" python - <<'PY'
 import cv2
 import fairseq
 import numpy
+import os
 import skimage
 import torch
 import torchvision
+from pathlib import Path
+from fairseq.file_io import PathManager
 from models.polyformer import PolyFormerModel
+
+fairseq_path = Path(fairseq.__file__).resolve()
+vendored_root = (Path(os.environ["POLYFORMER_DIR"]) / "fairseq").resolve()
+if vendored_root not in fairseq_path.parents:
+    raise RuntimeError(f"Wrong fairseq resolved: {fairseq_path}; expected under {vendored_root}")
 
 print(
     "PolyFormer environment ready:",
@@ -49,6 +59,7 @@ print(
     "cuda", torch.version.cuda,
     "numpy", numpy.__version__,
     "opencv", cv2.__version__,
+    "fairseq", fairseq_path,
 )
 PY
 )
