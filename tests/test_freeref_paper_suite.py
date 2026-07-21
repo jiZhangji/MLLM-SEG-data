@@ -143,3 +143,12 @@ def test_paper_scripts_keep_download_and_inference_separate() -> None:
     assert "download_missing_method_weights.sh" not in run_script
     assert "run_pixellm_freeref_full_eval.sh" in run_script
     assert "run_segagent_freeref_full_eval.sh" in run_script
+
+
+def test_segagent_environment_setup_is_isolated_from_inference() -> None:
+    script = (ROOT / "prepare_segagent_freeref_env.sh").read_text(encoding="utf-8")
+    assert "--clone" in script
+    assert "opencv-python-headless==4.10.0.84" in script
+    assert "segment-anything==1.0" in script
+    assert "run_segagent_freeref_full_eval.sh" not in script
+    assert "download_missing_method_weights.sh" not in script
