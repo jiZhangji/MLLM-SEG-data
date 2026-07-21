@@ -425,7 +425,7 @@ if any_selected pixellm lisa gsva; then
     "${WEIGHTS_ROOT}/shared/clip-vit-large-patch14" || true
 fi
 
-if any_selected read segagent; then
+if any_selected pixellm read segagent; then
   run_artifact shared clip-vit-large-patch14-336 dir \
     "${WEIGHTS_ROOT}/shared/clip-vit-large-patch14-336" \
     'https://huggingface.co/openai/clip-vit-large-patch14-336' \
