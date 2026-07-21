@@ -5,7 +5,13 @@ SOURCE_ENV="${SEGAGENT_SOURCE_CONDA_ENV:-lisa-freeref}"
 TARGET_ENV="${SEGAGENT_CONDA_ENV:-segagent-freeref}"
 
 has_env() {
-  conda env list | awk 'NF && $1 !~ /^#/ {print $1}' | grep -Fxq "$1"
+  TARGET_NAME="$1" conda env list --json | python -c \
+    'import json, os, pathlib, sys; data=json.load(sys.stdin); name=os.environ["TARGET_NAME"]; raise SystemExit(0 if any(pathlib.Path(path).name == name for path in data.get("envs", [])) else 1)'
+}
+
+env_prefix() {
+  TARGET_NAME="$1" conda info --json | python -c \
+    'import json, os, pathlib, sys; data=json.load(sys.stdin); print(pathlib.Path(data["envs_dirs"][0]) / os.environ["TARGET_NAME"])'
 }
 
 if ! has_env "${SOURCE_ENV}"; then
@@ -14,6 +20,12 @@ if ! has_env "${SOURCE_ENV}"; then
 fi
 
 if ! has_env "${TARGET_ENV}"; then
+  TARGET_PREFIX="$(env_prefix "${TARGET_ENV}")"
+  if [[ -d "${TARGET_PREFIX}" ]]; then
+    backup="${TARGET_PREFIX}.incomplete.$(date +%Y%m%d-%H%M%S)"
+    echo "Moving incomplete conda directory to ${backup}"
+    mv "${TARGET_PREFIX}" "${backup}"
+  fi
   echo "Cloning ${SOURCE_ENV} -> ${TARGET_ENV}"
   conda create -y -n "${TARGET_ENV}" --clone "${SOURCE_ENV}"
 fi

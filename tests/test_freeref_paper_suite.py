@@ -150,5 +150,7 @@ def test_segagent_environment_setup_is_isolated_from_inference() -> None:
     assert "--clone" in script
     assert "opencv-python-headless==4.10.0.84" in script
     assert "segment-anything==1.0" in script
+    assert "Moving incomplete conda directory" in script
+    assert "conda env list --json" in script
     assert "run_segagent_freeref_full_eval.sh" not in script
     assert "download_missing_method_weights.sh" not in script
