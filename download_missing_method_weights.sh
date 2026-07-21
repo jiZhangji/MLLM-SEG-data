@@ -433,7 +433,7 @@ if any_selected pixellm read segagent; then
     "${WEIGHTS_ROOT}/shared/clip-vit-large-patch14-336" || true
 fi
 
-if any_selected rela uninext; then
+if any_selected rela polyformer uninext; then
   run_artifact shared bert-base-uncased dir \
     "${WEIGHTS_ROOT}/shared/bert-base-uncased" \
     'https://huggingface.co/google-bert/bert-base-uncased' \
