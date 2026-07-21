@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
+
+import numpy as np
+from PIL import Image
 
 
 class FullEvaluationList(list[Any]):
@@ -40,12 +45,74 @@ def trusted_legacy_checkpoint_loading(torch_module: Any) -> Iterator[None]:
         torch_module.load = original_load
 
 
+@contextmanager
+def freeref_guided_click_generation(
+    grounding_model: Any,
+    refiner: Any,
+    torch_module: Any,
+    image_loader: Callable[[str], np.ndarray],
+    boundary_sigma: float,
+) -> Iterator[dict[str, float]]:
+    """Show a FreeRef-refined intermediate mask to the click-generating MLLM."""
+
+    had_instance_method = "generate_response" in getattr(grounding_model, "__dict__", {})
+    original_instance_method = getattr(grounding_model, "__dict__", {}).get("generate_response")
+    original_generate_response = grounding_model.generate_response
+    cached_path = ""
+    cached_image: np.ndarray | None = None
+    stats = {"guided_masks": 0.0, "freeref_seconds": 0.0}
+
+    def generate_response(prompt: Any, img_path: str, mask: Any, conv: Any) -> Any:
+        nonlocal cached_path, cached_image
+        guided_mask = mask
+        if mask is not None:
+            if img_path != cached_path:
+                cached_image = image_loader(img_path)
+                cached_path = img_path
+            mask_array = mask.detach().cpu().numpy() if hasattr(mask, "detach") else np.asarray(mask)
+            if mask_array.ndim == 3 and mask_array.shape[0] == 1:
+                mask_array = mask_array[0]
+            start = time.perf_counter()
+            output = refiner.refine_hard_mask(
+                cached_image,
+                mask_array,
+                boundary_sigma=boundary_sigma,
+            )
+            stats["freeref_seconds"] += time.perf_counter() - start
+            stats["guided_masks"] += 1.0
+            guided_mask = output["refined_mask"]
+            if not isinstance(guided_mask, torch_module.Tensor):
+                guided_mask = torch_module.as_tensor(guided_mask)
+            if getattr(mask, "ndim", 0) == 3:
+                guided_mask = guided_mask.unsqueeze(0)
+            guided_mask = guided_mask.to(device=mask.device, dtype=mask.dtype)
+        return original_generate_response(prompt, img_path, guided_mask, conv)
+
+    grounding_model.generate_response = generate_response
+    try:
+        yield stats
+    finally:
+        if had_instance_method:
+            grounding_model.generate_response = original_instance_method
+        else:
+            del grounding_model.generate_response
+
+
 def parse_wrapper_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--segagent-code-dir", type=Path, required=True)
     parser.add_argument("--limit-items", type=int, default=0)
     parser.add_argument("--offset-items", type=int, default=0)
+    parser.add_argument("--freeref-click-guidance", action="store_true")
+    parser.add_argument("--freeref-boundary-sigma", type=float, default=8.0)
+    parser.add_argument("--freeref-n-segments", type=int, default=1024)
+    parser.add_argument("--freeref-graph-lambda", type=float, default=1.0)
     return parser.parse_known_args()
+
+
+def load_rgb(path: str) -> np.ndarray:
+    with Image.open(path) as image:
+        return np.asarray(image.convert("RGB"))
 
 
 def main() -> int:
@@ -102,7 +169,42 @@ def main() -> int:
         with trusted_legacy_checkpoint_loading(torch):
             segmentation_model, grounding_model = load_model(args)
         evaluator = REFCOCOG_EVAL(grounding_model, segmentation_model, args)
-        evaluator.forward(args.img, args.json)
+        guidance_stats: dict[str, float] = {"guided_masks": 0.0, "freeref_seconds": 0.0}
+        if wrapper.freeref_click_guidance:
+            from training_free_refine import TrainingFreeRefineConfig, TrainingFreeUncertaintyRefiner
+
+            config = TrainingFreeRefineConfig(
+                n_segments=wrapper.freeref_n_segments,
+                graph_lambda=wrapper.freeref_graph_lambda,
+            )
+            refiner = TrainingFreeUncertaintyRefiner(config)
+            with freeref_guided_click_generation(
+                grounding_model,
+                refiner,
+                torch,
+                load_rgb,
+                wrapper.freeref_boundary_sigma,
+            ) as guidance_stats:
+                evaluator.forward(args.img, args.json)
+            report = {
+                "protocol": "segagent_freeref_guided_click_generation_v1",
+                "placement": "intermediate SimpleClick mask -> FreeRef -> next SegAgent click -> SimpleClick",
+                "final_mask_postprocessed": False,
+                "boundary_sigma": wrapper.freeref_boundary_sigma,
+                "config": {
+                    "n_segments": wrapper.freeref_n_segments,
+                    "graph_lambda": wrapper.freeref_graph_lambda,
+                },
+                **guidance_stats,
+            }
+            output_root = Path(os.environ.get("VIS_DIR", os.getcwd()))
+            (output_root / "freeref_click_guidance.json").write_text(
+                json.dumps(report, indent=2, ensure_ascii=True),
+                encoding="utf-8",
+            )
+            print(json.dumps(report, indent=2, ensure_ascii=True))
+        else:
+            evaluator.forward(args.img, args.json)
     finally:
         if dist.is_initialized():
             dist.destroy_process_group()

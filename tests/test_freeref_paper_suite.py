@@ -13,6 +13,7 @@ from universal_freeref.export_utils import merge_binary_logits
 from universal_freeref.import_segagent_outputs import reported_iou, select_prediction
 from universal_freeref.run_segagent_official import (
     FullEvaluationList,
+    freeref_guided_click_generation,
     trusted_legacy_checkpoint_loading,
 )
 
@@ -77,6 +78,45 @@ def test_segagent_wrapper_scopes_pytorch_26_checkpoint_compatibility() -> None:
         assert FakeTorch.load("weights.pth", weights_only=True) == "loaded"
     assert calls == [{"weights_only": False}, {"weights_only": True}]
     assert FakeTorch.load is original_load
+
+
+def test_segagent_freeref_guides_next_click_without_changing_decoder_output() -> None:
+    import torch
+
+    class GroundingModel:
+        def __init__(self) -> None:
+            self.seen_masks: list[torch.Tensor | None] = []
+
+        def generate_response(self, prompt: object, image: str, mask: torch.Tensor | None, conv: object) -> str:
+            self.seen_masks.append(mask)
+            return "click"
+
+    class Refiner:
+        @staticmethod
+        def refine_hard_mask(image: np.ndarray, mask: np.ndarray, boundary_sigma: float) -> dict[str, torch.Tensor]:
+            assert image.shape == (4, 5, 3)
+            assert boundary_sigma == 3.0
+            return {"refined_mask": torch.from_numpy(~mask.astype(bool))}
+
+    model = GroundingModel()
+    original = model.generate_response
+    raw_mask = torch.zeros((1, 4, 5), dtype=torch.uint8)
+    with freeref_guided_click_generation(
+        model,
+        Refiner(),
+        torch,
+        lambda _: np.zeros((4, 5, 3), dtype=np.uint8),
+        3.0,
+    ) as stats:
+        assert model.generate_response("prompt", "image.png", None, None) == "click"
+        assert model.generate_response("prompt", "image.png", raw_mask, None) == "click"
+    assert "generate_response" not in model.__dict__
+    assert model.generate_response.__func__ is original.__func__
+    assert model.generate_response.__self__ is original.__self__
+    assert model.seen_masks[0] is None
+    assert bool(model.seen_masks[1].all())
+    assert not bool(raw_mask.any())
+    assert stats["guided_masks"] == 1.0
 
 
 def test_external_prediction_manifest_aligns_flat_eval_json(tmp_path: Path, monkeypatch) -> None:

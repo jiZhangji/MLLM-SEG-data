@@ -20,6 +20,8 @@ OFFSET_ITEMS="${SEGAGENT_OFFSET_ITEMS:-0}"
 N_CLICKS="${SEGAGENT_N_CLICKS:-7}"
 MIN_FREE_MB="${SEGAGENT_MIN_FREE_MB_PER_JOB:-22000}"
 LAUNCH_STAGGER="${SEGAGENT_LAUNCH_STAGGER_SECONDS:-5}"
+CLICK_GUIDANCE="${SEGAGENT_FREEREF_CLICK_GUIDANCE:-0}"
+CLICK_GUIDANCE_BOUNDARY_SIGMA="${SEGAGENT_FREEREF_BOUNDARY_SIGMA:-8.0}"
 
 if [[ ! -d "${SEGAGENT_DIR}/evaltools" ]]; then
   echo "ERROR: SegAgent code is missing: ${SEGAGENT_DIR}" >&2
@@ -81,15 +83,28 @@ find_official_output_json() {
 }
 
 run_split() {
-  local split="$1" gpu="$2" master_port="$3" data_json official_dir import_dir refine_dir output_json free_mb
+  local split="$1" gpu="$2" master_port="$3" data_json official_dir import_dir refine_dir output_json free_mb method_label
+  local -a guidance_args=()
   data_json="$(find_dataset_json "${split}")"
   if [[ -z "${data_json}" || ! -f "${data_json}" ]]; then
     echo "ERROR: SegAgent dataset JSON not found for ${split}." >&2
     return 1
   fi
-  official_dir="${OUTPUT_ROOT}/${split//+/plus}/official"
-  import_dir="${OUTPUT_ROOT}/${split//+/plus}/import"
-  refine_dir="${OUTPUT_ROOT}/${split//+/plus}/freeref"
+  method_label="SegAgent-Qwen7B-SimpleClick"
+  if [[ "${CLICK_GUIDANCE}" == "1" ]]; then
+    method_label="SegAgent-Qwen7B-SimpleClick-FreeRefGuidedClicks"
+    guidance_args+=(
+      --freeref-click-guidance
+      --freeref-boundary-sigma "${CLICK_GUIDANCE_BOUNDARY_SIGMA}"
+    )
+    official_dir="${OUTPUT_ROOT}/${split//+/plus}/click_guided_official"
+    import_dir="${OUTPUT_ROOT}/${split//+/plus}/click_guided_import"
+    refine_dir="${OUTPUT_ROOT}/${split//+/plus}/click_guided_evaluation"
+  else
+    official_dir="${OUTPUT_ROOT}/${split//+/plus}/official"
+    import_dir="${OUTPUT_ROOT}/${split//+/plus}/import"
+    refine_dir="${OUTPUT_ROOT}/${split//+/plus}/freeref"
+  fi
   mkdir -p "${official_dir}"
   output_json="$(find_official_output_json "${official_dir}")"
 
@@ -108,6 +123,7 @@ run_split() {
           --segagent-code-dir "${SEGAGENT_DIR}" \
           --limit-items "${LIMIT_ITEMS}" \
           --offset-items "${OFFSET_ITEMS}" \
+          "${guidance_args[@]}" \
           NoBRS \
           --model "${MODEL_PATH}" \
           --img "${IMAGE_ROOT}" \
@@ -133,6 +149,7 @@ run_split() {
         --input-json "${output_json}" \
         --output-dir "${import_dir}" \
         --split "${split}" \
+        --method "${method_label}" \
         --selection final \
         --image-root "${IMAGE_ROOT}"
     PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}" conda run --no-capture-output -n "${REFINE_ENV}" \
@@ -180,7 +197,11 @@ if (( FAILED != 0 )); then exit 1; fi
 
 SUMMARY_ARGS=()
 for split in ${SPLITS}; do
-  summary="${OUTPUT_ROOT}/${split//+/plus}/freeref/eval_summary.json"
+  if [[ "${CLICK_GUIDANCE}" == "1" ]]; then
+    summary="${OUTPUT_ROOT}/${split//+/plus}/click_guided_evaluation/eval_summary.json"
+  else
+    summary="${OUTPUT_ROOT}/${split//+/plus}/freeref/eval_summary.json"
+  fi
   [[ -f "${summary}" ]] && SUMMARY_ARGS+=(--summary "SegAgent_${split}=${summary}")
 done
 if (( ${#SUMMARY_ARGS[@]} > 0 )); then
