@@ -11,6 +11,7 @@ from universal_freeref.export_polyformer_masks import (
     _ordered_rows,
     _polygons_from_generation,
     _rasterize,
+    _redirect_bert_pretrained,
 )
 
 
@@ -45,6 +46,17 @@ def test_polyformer_manifest_follows_official_tsv_order(tmp_path: Path) -> None:
     tsv.write_text("b\tdata\na\tdata\n", encoding="utf-8")
     rows = [{"instance_id": "a"}, {"instance_id": "b"}]
     assert [row["instance_id"] for row in _ordered_rows(rows, tsv)] == ["b", "a"]
+
+
+def test_polyformer_bert_model_and_tokenizer_can_be_redirected_offline(tmp_path: Path) -> None:
+    class DummyLoader:
+        @classmethod
+        def from_pretrained(cls, source: str, marker: str = ""):
+            return source, marker
+
+    _redirect_bert_pretrained(DummyLoader, tmp_path)
+    assert DummyLoader.from_pretrained("bert-base-uncased", "local") == (str(tmp_path), "local")
+    assert DummyLoader.from_pretrained("another-model", "remote") == ("another-model", "remote")
 
 
 def test_polyformer_summary_checks_paired_baseline_identity(tmp_path: Path, monkeypatch) -> None:

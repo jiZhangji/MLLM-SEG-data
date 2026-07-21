@@ -231,6 +231,17 @@ def _ordered_rows(rows: list[dict[str, Any]], tsv: Path) -> list[dict[str, Any]]
     return ordered
 
 
+def _redirect_bert_pretrained(loader_class: Any, bert_dir: Path) -> None:
+    original_from_pretrained = loader_class.from_pretrained.__func__
+
+    @classmethod
+    def local_from_pretrained(cls: Any, name: str, *args: Any, **kwargs: Any):
+        source = str(bert_dir) if str(name) == "bert-base-uncased" else name
+        return original_from_pretrained(cls, source, *args, **kwargs)
+
+    loader_class.from_pretrained = local_from_pretrained
+
+
 def main() -> int:
     wrapper, official_argv = parse_wrapper_args(sys.argv[1:])
     if wrapper.freeref_patch_size <= 0:
@@ -243,6 +254,8 @@ def main() -> int:
         "PolyFormer evaluate.py": code_dir / "evaluate.py",
         "PolyFormer TSV": tsv,
         "local BERT vocabulary": bert_dir / "vocab.txt",
+        "local BERT config": bert_dir / "config.json",
+        "local BERT weights": bert_dir / "pytorch_model.bin",
     }
     missing = [f"{label}: {path}" for label, path in required.items() if not path.is_file()]
     if missing:
@@ -266,16 +279,11 @@ def main() -> int:
 
     torch.load = trusted_checkpoint_load  # type: ignore[assignment]
 
+    from bert.modeling_bert import BertModel  # type: ignore[import-not-found]
     from bert.tokenization_bert import BertTokenizer  # type: ignore[import-not-found]
 
-    original_from_pretrained = BertTokenizer.from_pretrained.__func__
-
-    @classmethod
-    def local_bert_from_pretrained(cls: Any, name: str, *args: Any, **kwargs: Any):
-        source = str(bert_dir) if name == "bert-base-uncased" else name
-        return original_from_pretrained(cls, source, *args, **kwargs)
-
-    BertTokenizer.from_pretrained = local_bert_from_pretrained  # type: ignore[method-assign]
+    _redirect_bert_pretrained(BertModel, bert_dir)
+    _redirect_bert_pretrained(BertTokenizer, bert_dir)
 
     from utils import eval_utils as official_eval_utils  # type: ignore[import-not-found]
     import evaluate as official_evaluate  # type: ignore[import-not-found]
