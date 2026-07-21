@@ -11,7 +11,10 @@ from universal_freeref import build_eval_json_manifest, summarize_paper_suite
 from universal_freeref.export_pixellm_masks import preprocess_square
 from universal_freeref.export_utils import merge_binary_logits
 from universal_freeref.import_segagent_outputs import reported_iou, select_prediction
-from universal_freeref.run_segagent_official import FullEvaluationList
+from universal_freeref.run_segagent_official import (
+    FullEvaluationList,
+    trusted_legacy_checkpoint_loading,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +60,23 @@ def test_segagent_wrapper_removes_official_5000_item_cap() -> None:
     assert len(values[:5000]) == 6001
     limited = FullEvaluationList(list(range(100)), offset=7, limit=11)
     assert limited[:5000] == list(range(7, 18))
+
+
+def test_segagent_wrapper_scopes_pytorch_26_checkpoint_compatibility() -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeTorch:
+        @staticmethod
+        def load(*args: object, **kwargs: object) -> str:
+            calls.append(dict(kwargs))
+            return "loaded"
+
+    original_load = FakeTorch.load
+    with trusted_legacy_checkpoint_loading(FakeTorch):
+        assert FakeTorch.load("checkpoint.pth") == "loaded"
+        assert FakeTorch.load("weights.pth", weights_only=True) == "loaded"
+    assert calls == [{"weights_only": False}, {"weights_only": True}]
+    assert FakeTorch.load is original_load
 
 
 def test_external_prediction_manifest_aligns_flat_eval_json(tmp_path: Path, monkeypatch) -> None:

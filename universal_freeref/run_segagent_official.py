@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 class FullEvaluationList(list[Any]):
@@ -20,6 +21,23 @@ class FullEvaluationList(list[Any]):
             stop = self.offset + self.limit if self.limit > 0 else None
             return list.__getitem__(self, slice(self.offset, stop, None))
         return list.__getitem__(self, key)
+
+
+@contextmanager
+def trusted_legacy_checkpoint_loading(torch_module: Any) -> Iterator[None]:
+    """Restore the pre-2.6 torch.load default for trusted official checkpoints."""
+
+    original_load = torch_module.load
+
+    def load(*args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("weights_only", False)
+        return original_load(*args, **kwargs)
+
+    torch_module.load = load
+    try:
+        yield
+    finally:
+        torch_module.load = original_load
 
 
 def parse_wrapper_args() -> tuple[argparse.Namespace, list[str]]:
@@ -77,9 +95,13 @@ def main() -> int:
         return FullEvaluationList(values, wrapper.offset_items, wrapper.limit_items)
 
     REFCOCOG_EVAL.load_annotations = load_all_annotations
-    segmentation_model, grounding_model = load_model(args)
-    evaluator = REFCOCOG_EVAL(grounding_model, segmentation_model, args)
     try:
+        # SimpleClick checkpoints serialize model classes and predate PyTorch
+        # 2.6's weights_only=True default. These files come from the verified
+        # upstream release and need the legacy loader only during model setup.
+        with trusted_legacy_checkpoint_loading(torch):
+            segmentation_model, grounding_model = load_model(args)
+        evaluator = REFCOCOG_EVAL(grounding_model, segmentation_model, args)
         evaluator.forward(args.img, args.json)
     finally:
         if dist.is_initialized():
