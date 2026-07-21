@@ -52,6 +52,12 @@ def test_download_sources_are_official_and_status_is_size_validated():
     assert "drive.usercontent.google.com" in text
     assert "seafile_share_files" in text
     assert "cloud.tsinghua.edu.cn" in text
+    assert "cocolvis_vit_large.pth" in text
+    simpleclick_block = text.split("simpleclick_url=", 1)[1].split(
+        'if [[ "${DOWNLOAD_DATASETS}"', 1
+    )[0]
+    assert "gdrive_folder" in simpleclick_block
+    assert "block_or_adopt_artifact" not in simpleclick_block
 
 
 def test_status_script_reports_processes_disk_artifacts_and_manual_queue():

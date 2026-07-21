@@ -568,9 +568,14 @@ if selected segagent; then
     "${WEIGHTS_ROOT}/segagent/SegAgent-Model" || true
 
   simpleclick_url='https://drive.google.com/drive/folders/1qpK0gtAPkVMF7VC42UA9XF4xMWr5KJmL?usp=sharing'
-  block_or_adopt_artifact segagent simpleclick-models dir \
+  if ! run_artifact segagent simpleclick-models dir \
     "${WEIGHTS_ROOT}/segagent/simpleclick_models" "${simpleclick_url}" \
-    'The official SimpleClick Google Drive folder currently returns HTTP 404; cocolvis_vit_large.pth is unavailable' || true
+    gdrive_folder "${simpleclick_url}" \
+    "${WEIGHTS_ROOT}/segagent/simpleclick_models"; then
+    record_manual segagent simpleclick-models \
+      "${WEIGHTS_ROOT}/segagent/simpleclick_models" "${simpleclick_url}" \
+      'Official Google Drive download failed; place cocolvis_vit_large.pth in this directory'
+  fi
 
   if [[ "${DOWNLOAD_DATASETS}" == "1" ]]; then
     run_artifact segagent segagent-dataset dir \
