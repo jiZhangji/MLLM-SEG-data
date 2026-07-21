@@ -234,3 +234,20 @@ def test_lisa_paper_freeref_runner_keeps_the_reproduction_gate() -> None:
     assert "paper_match" in text
     assert "universal_freeref.evaluate" in text
     assert "waiting 10 seconds" in text
+
+
+def test_four_gpu_runner_assigns_parallel_work_by_gpu_type() -> None:
+    text = (ROOT / "run_freeref_remaining_4gpu.sh").read_text(encoding="utf-8")
+    assert "H200_GPUS" in text
+    assert "H100_GPUS" in text
+    assert "TEXT4SEG_H200_PARALLEL_JOBS:-5" in text
+    assert "STAMP_H200_PARALLEL_JOBS:-6" in text
+    assert "LISA_H100_PARALLEL_JOBS:-2" in text
+    assert "prepare_lisa_paper_data.sh" in text
+
+
+def test_all_experiment_status_script_covers_the_three_model_families() -> None:
+    text = (ROOT / "check_freeref_all_status.sh").read_text(encoding="utf-8")
+    assert "check_frozen_samh_status.sh" in text
+    assert "check_text4seg_public_p24_status.sh" in text
+    assert "check_lisa_paper_freeref_status.sh" in text
