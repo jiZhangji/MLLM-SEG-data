@@ -34,7 +34,7 @@ if ! has_env "${TARGET_ENV}"; then
   conda create -y -n "${TARGET_ENV}" --clone "${SOURCE_ENV}"
 fi
 
-IMPORT_CHECK='import albumentations, cv2, easydict, mmcv, segment_anything, tensorboard, timm, tiktoken, torch; assert torch.cuda.is_available()'
+IMPORT_CHECK='import albumentations, cv2, easydict, mmcv, segment_anything, tensorboard, timm, tiktoken, torch, torchshow, yacs; assert torch.cuda.is_available()'
 if ! PYTHONNOUSERSITE=1 conda run -n "${TARGET_ENV}" python -c "${IMPORT_CHECK}" >/dev/null 2>&1; then
   echo "Installing the SegAgent/SimpleClick runtime into ${TARGET_ENV}"
   PYTHONNOUSERSITE=1 conda run --no-capture-output -n "${TARGET_ENV}" \
@@ -52,7 +52,9 @@ if ! PYTHONNOUSERSITE=1 conda run -n "${TARGET_ENV}" python -c "${IMPORT_CHECK}"
       tensorboard==2.17.0 \
       protobuf==4.25.4 \
       tiktoken==0.7.0 \
+      torchshow==0.5.1 \
       transformers-stream-generator==0.0.5 \
+      yacs==0.1.8 \
       yapf==0.40.2
   # MMCV 1.6.2 imports pkg_resources from its setup.py. New isolated build
   # environments omit it, so build against the pinned setuptools above.
@@ -61,7 +63,7 @@ if ! PYTHONNOUSERSITE=1 conda run -n "${TARGET_ENV}" python -c "${IMPORT_CHECK}"
 fi
 
 PYTHONNOUSERSITE=1 conda run --no-capture-output -n "${TARGET_ENV}" python -c \
-  'import albumentations, cv2, easydict, mmcv, segment_anything, tensorboard, timm, tiktoken, torch; print("SegAgent environment ready:", torch.__version__, torch.version.cuda, cv2.__version__)'
+  'import albumentations, cv2, easydict, mmcv, segment_anything, tensorboard, timm, tiktoken, torch, torchshow, yacs; print("SegAgent environment ready:", torch.__version__, torch.version.cuda, cv2.__version__)'
 
 if [[ ! -f "${SEGAGENT_DIR}/evaltools/model_loader.py" ]]; then
   echo "ERROR: SegAgent model loader is missing: ${SEGAGENT_DIR}/evaltools/model_loader.py" >&2

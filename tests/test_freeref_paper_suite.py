@@ -155,6 +155,8 @@ def test_segagent_environment_setup_is_isolated_from_inference() -> None:
     assert "setuptools==80.9.0" in script
     assert "--no-build-isolation mmcv==1.6.2" in script
     assert "tensorboard==2.17.0" in script
+    assert "torchshow==0.5.1" in script
+    assert "yacs==0.1.8" in script
     assert "from model_loader import load_model" in script
     assert "sys.argv[1]" in script
     assert 'os.environ["TARGET_NAME"]' not in script
