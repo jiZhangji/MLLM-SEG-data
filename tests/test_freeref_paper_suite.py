@@ -154,6 +154,8 @@ def test_segagent_environment_setup_is_isolated_from_inference() -> None:
     assert "conda env list --json" in script
     assert "setuptools==80.9.0" in script
     assert "--no-build-isolation mmcv==1.6.2" in script
+    assert "tensorboard==2.17.0" in script
+    assert "from model_loader import load_model" in script
     assert "sys.argv[1]" in script
     assert 'os.environ["TARGET_NAME"]' not in script
     assert "run_segagent_freeref_full_eval.sh" not in script

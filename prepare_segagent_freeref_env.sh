@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="${MLLM_SEG_ROOT:-/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/lh/or/MLLM-SEG}"
+SEGAGENT_DIR="${SEGAGENT_DIR:-${ROOT}/code/third_party/segagent}"
 SOURCE_ENV="${SEGAGENT_SOURCE_CONDA_ENV:-lisa-freeref}"
 TARGET_ENV="${SEGAGENT_CONDA_ENV:-segagent-freeref}"
 
@@ -32,7 +34,7 @@ if ! has_env "${TARGET_ENV}"; then
   conda create -y -n "${TARGET_ENV}" --clone "${SOURCE_ENV}"
 fi
 
-IMPORT_CHECK='import albumentations, cv2, easydict, mmcv, segment_anything, timm, tiktoken, torch; assert torch.cuda.is_available()'
+IMPORT_CHECK='import albumentations, cv2, easydict, mmcv, segment_anything, tensorboard, timm, tiktoken, torch; assert torch.cuda.is_available()'
 if ! PYTHONNOUSERSITE=1 conda run -n "${TARGET_ENV}" python -c "${IMPORT_CHECK}" >/dev/null 2>&1; then
   echo "Installing the SegAgent/SimpleClick runtime into ${TARGET_ENV}"
   PYTHONNOUSERSITE=1 conda run --no-capture-output -n "${TARGET_ENV}" \
@@ -47,6 +49,8 @@ if ! PYTHONNOUSERSITE=1 conda run -n "${TARGET_ENV}" python -c "${IMPORT_CHECK}"
       imgaug==0.4.0 \
       timm==0.6.13 \
       segment-anything==1.0 \
+      tensorboard==2.17.0 \
+      protobuf==4.25.4 \
       tiktoken==0.7.0 \
       transformers-stream-generator==0.0.5 \
       yapf==0.40.2
@@ -57,4 +61,16 @@ if ! PYTHONNOUSERSITE=1 conda run -n "${TARGET_ENV}" python -c "${IMPORT_CHECK}"
 fi
 
 PYTHONNOUSERSITE=1 conda run --no-capture-output -n "${TARGET_ENV}" python -c \
-  'import albumentations, cv2, easydict, mmcv, segment_anything, timm, tiktoken, torch; print("SegAgent environment ready:", torch.__version__, torch.version.cuda, cv2.__version__)'
+  'import albumentations, cv2, easydict, mmcv, segment_anything, tensorboard, timm, tiktoken, torch; print("SegAgent environment ready:", torch.__version__, torch.version.cuda, cv2.__version__)'
+
+if [[ ! -f "${SEGAGENT_DIR}/evaltools/model_loader.py" ]]; then
+  echo "ERROR: SegAgent model loader is missing: ${SEGAGENT_DIR}/evaltools/model_loader.py" >&2
+  exit 1
+fi
+echo "Checking the official SegAgent model-loader import"
+(
+  cd "${SEGAGENT_DIR}/evaltools"
+  PYTHONPATH="${SEGAGENT_DIR}:${SEGAGENT_DIR}/evaltools:${PYTHONPATH:-}" PYTHONNOUSERSITE=1 \
+    conda run --no-capture-output -n "${TARGET_ENV}" python -c \
+      'from model_loader import load_model; print("SegAgent official model_loader import: OK")'
+)
