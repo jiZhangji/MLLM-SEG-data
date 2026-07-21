@@ -152,5 +152,9 @@ def test_segagent_environment_setup_is_isolated_from_inference() -> None:
     assert "segment-anything==1.0" in script
     assert "Moving incomplete conda directory" in script
     assert "conda env list --json" in script
+    assert "setuptools==80.9.0" in script
+    assert "--no-build-isolation mmcv==1.6.2" in script
+    assert "sys.argv[1]" in script
+    assert 'os.environ["TARGET_NAME"]' not in script
     assert "run_segagent_freeref_full_eval.sh" not in script
     assert "download_missing_method_weights.sh" not in script
