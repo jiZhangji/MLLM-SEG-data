@@ -182,3 +182,12 @@ def test_segagent_environment_setup_is_isolated_from_inference() -> None:
     assert 'os.environ["TARGET_NAME"]' not in script
     assert "run_segagent_freeref_full_eval.sh" not in script
     assert "download_missing_method_weights.sh" not in script
+
+
+def test_segagent_runner_uses_absolute_output_paths_and_discovers_official_results() -> None:
+    script = (ROOT / "run_segagent_freeref_full_eval.sh").read_text(encoding="utf-8")
+    assert 'OUTPUT_ROOT="$(cd "${OUTPUT_ROOT}" && pwd -P)"' in script
+    assert 'LOG_ROOT="$(cd "${LOG_ROOT}" && pwd -P)"' in script
+    assert "find_official_output_json" in script
+    assert "*_newresults_${N_CLICKS}_simple_click_qwen-full_radius0use_gt_box0.json" in script
+    assert 'dataset_name="$(basename "${data_json}" .json)"' not in script

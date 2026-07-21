@@ -59,6 +59,8 @@ if (( ${#GPU_ARRAY[@]} == 0 )); then
 fi
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
 mkdir -p "${OUTPUT_ROOT}" "${LOG_ROOT}"
+OUTPUT_ROOT="$(cd "${OUTPUT_ROOT}" && pwd -P)"
+LOG_ROOT="$(cd "${LOG_ROOT}" && pwd -P)"
 
 find_dataset_json() {
   local split="$1" candidate
@@ -71,8 +73,15 @@ find_dataset_json() {
   find "${DATASET_ROOT}" -type f -name "${split}.json" -print -quit 2>/dev/null
 }
 
+find_official_output_json() {
+  local official_dir="$1"
+  find "${official_dir}" -maxdepth 1 -type f \
+    -name "*_newresults_${N_CLICKS}_simple_click_qwen-full_radius0use_gt_box0.json" \
+    -print -quit 2>/dev/null
+}
+
 run_split() {
-  local split="$1" gpu="$2" master_port="$3" data_json official_dir import_dir refine_dir output_json dataset_name free_mb
+  local split="$1" gpu="$2" master_port="$3" data_json official_dir import_dir refine_dir output_json free_mb
   data_json="$(find_dataset_json "${split}")"
   if [[ -z "${data_json}" || ! -f "${data_json}" ]]; then
     echo "ERROR: SegAgent dataset JSON not found for ${split}." >&2
@@ -82,11 +91,10 @@ run_split() {
   import_dir="${OUTPUT_ROOT}/${split//+/plus}/import"
   refine_dir="${OUTPUT_ROOT}/${split//+/plus}/freeref"
   mkdir -p "${official_dir}"
-  dataset_name="$(basename "${data_json}" .json)"
-  output_json="${official_dir}/${dataset_name}_newresults_${N_CLICKS}_simple_click_qwen-full_radius0use_gt_box0.json"
+  output_json="$(find_official_output_json "${official_dir}")"
 
   if [[ ! -f "${refine_dir}/eval_summary.json" ]]; then
-    if [[ ! -f "${output_json}" ]]; then
+    if [[ -z "${output_json}" || ! -f "${output_json}" ]]; then
       echo "RUN SegAgent ${split} on physical GPU ${gpu}"
       while true; do
         free_mb="$(nvidia-smi -i "${gpu}" --query-gpu=memory.free --format=csv,noheader,nounits | tr -dc '0-9')"
@@ -112,6 +120,11 @@ run_split() {
           --seg_model simple_click \
           --grounding_model qwen-full \
           --gpus 0
+      output_json="$(find_official_output_json "${official_dir}")"
+      if [[ -z "${output_json}" || ! -f "${output_json}" ]]; then
+        echo "ERROR: SegAgent completed but its official result JSON was not found in ${official_dir}." >&2
+        return 1
+      fi
     else
       echo "REUSE SegAgent official output ${split}: ${output_json}"
     fi
