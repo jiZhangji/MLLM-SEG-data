@@ -25,11 +25,13 @@ elif [[ "${RUN_SEGAGENT}" == "auto" ]]; then
   model="${SEGAGENT_MODEL_PATH:-${ROOT}/models/freeref_missing_methods/segagent/SegAgent-Model}"
   dataset="${SEGAGENT_DATASET_ROOT:-${ROOT}/models/freeref_missing_methods/segagent/SegAgent-Dataset}"
   click_root="${SEGAGENT_SIMPLECLICK_ROOT:-${ROOT}/models/freeref_missing_methods/segagent/simpleclick_models}"
+  segagent_env="${SEGAGENT_CONDA_ENV:-segagent-freeref}"
   if [[ ! -f "${model}/config.json" ]]; then
     nested_model="$(find "${model}" -maxdepth 3 -type f -name config.json -printf '%h\n' -quit 2>/dev/null || true)"
     [[ -n "${nested_model}" ]] && model="${nested_model}"
   fi
-  if [[ -f "${model}/config.json" && -d "${dataset}" ]] && \
+  if conda env list | awk 'NF && $1 !~ /^#/ {print $1}' | grep -Fxq "${segagent_env}" && \
+     [[ -f "${model}/config.json" && -d "${dataset}" ]] && \
      find "${click_root}" -type f -name '*large*.pth' -print -quit 2>/dev/null | grep -q .; then
     run_segagent=1
   fi
