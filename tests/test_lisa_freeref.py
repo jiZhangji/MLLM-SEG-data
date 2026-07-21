@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import torch
 from PIL import Image
 
 from training_free_refine.data import ReferringSegDataset
@@ -23,6 +24,7 @@ from universal_freeref.evaluate_lisa_freeref_prompt import summarize_rows
 from universal_freeref.eval_lisa_official_freeref_sam import (
     PROTOCOL as LISA_OFFICIAL_FREEREF_SAM_PROTOCOL,
     summarize_rows as summarize_official_freeref_sam_rows,
+    token_image_similarity_probability,
 )
 from universal_freeref.eval_lisa_paper_protocol import (
     EXPECTED_EXPRESSIONS,
@@ -258,17 +260,33 @@ def test_all_experiment_status_script_covers_the_three_model_families() -> None:
     assert "check_lisa_official_freeref_sam_status.sh" in text
 
 
-def test_lisa_official_freeref_sam_summary_contains_all_four_paired_branches() -> None:
+def test_lisa_latent_similarity_prior_is_expression_specific() -> None:
+    image_embeddings = torch.tensor(
+        [[[[2.0, 0.0], [2.0, 0.0]], [[0.0, 2.0], [0.0, 2.0]]]]
+    )
+    prompts = torch.tensor([[[1.0, 0.0]], [[0.0, 1.0]]])
+    probability = token_image_similarity_probability(
+        image_embeddings,
+        prompts,
+        temperature=1.0,
+        bias=0.0,
+    )
+    assert probability.shape == (2, 2, 2)
+    assert torch.all(probability[0, :, 0] > probability[0, :, 1])
+    assert torch.all(probability[1, :, 1] > probability[1, :, 0])
+    assert torch.all((probability > 0.0) & (probability < 1.0))
+
+
+def test_lisa_official_latent_freeref_summary_contains_single_sam_branches() -> None:
     rows = []
-    for baseline, freeref, baseline_sam, freeref_sam in (
-        (0.5, 0.6, 0.7, 0.8),
-        (0.4, 0.5, 0.6, 0.7),
+    for baseline, latent_sam, freeref_sam in (
+        (0.5, 0.7, 0.8),
+        (0.4, 0.6, 0.7),
     ):
         row = {}
         for branch, iou in (
             ("baseline", baseline),
-            ("freeref", freeref),
-            ("baseline_sam", baseline_sam),
+            ("latent_sam", latent_sam),
             ("freeref_sam", freeref_sam),
         ):
             row[f"{branch}_iou"] = iou
@@ -283,7 +301,7 @@ def test_lisa_official_freeref_sam_summary_contains_all_four_paired_branches() -
     assert summary["freeref_sam_improved_samples"] == 2
 
 
-def test_lisa_h100_runner_uses_official_refer_and_freeref_before_second_sam() -> None:
+def test_lisa_h100_runner_uses_official_refer_and_latent_freeref_before_native_sam() -> None:
     runner = (ROOT / "run_lisa_official_freeref_sam_h100.sh").read_text(encoding="utf-8")
     evaluator = (ROOT / "universal_freeref/eval_lisa_official_freeref_sam.py").read_text(
         encoding="utf-8"
@@ -291,6 +309,10 @@ def test_lisa_h100_runner_uses_official_refer_and_freeref_before_second_sam() ->
     assert "LISA_H100_PARALLEL_PER_GPU:-2" in runner
     assert "eval_lisa_official_freeref_sam" in runner
     assert "ValDataset" in evaluator
-    assert "baseline_sam" in evaluator
+    assert "token_image_similarity_probability" in evaluator
+    assert "latent_sam" in evaluator
     assert "freeref_sam" in evaluator
+    assert "sam_decoder_calls_per_method_path\": 1" in evaluator
+    assert "baseline_second_sam_seconds" not in evaluator
+    assert "lisa_latent_freeref_before_sam" in runner
     assert LISA_OFFICIAL_FREEREF_SAM_PROTOCOL in evaluator

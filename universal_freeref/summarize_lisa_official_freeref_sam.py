@@ -8,7 +8,7 @@ from .eval_lisa_official_freeref_sam import BRANCHES, PROTOCOL
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Combine official REFER LISA four-branch summaries.")
+    parser = argparse.ArgumentParser(description="Combine official REFER latent FreeRef summaries.")
     parser.add_argument("--summary", action="append", default=[], metavar="SPLIT=PATH")
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
@@ -31,14 +31,14 @@ def main() -> int:
 
     labels = {
         "baseline": "LISA",
-        "freeref": "+FreeRef",
-        "baseline_sam": "+second SAM-H",
-        "freeref_sam": "+FreeRef+second SAM-H",
+        "latent_sam": "+latent prompt+SAM-H",
+        "freeref_sam": "+latent FreeRef+SAM-H",
     }
     lines = [
-        "# Public LISA-7B-v1 + FreeRef Before Second Frozen SAM-H",
+        "# Public LISA-7B-v1 + Latent FreeRef Before Native SAM-H",
         "",
-        "Official REFER loader; paired public-checkpoint transfer protocol, not a Table-3 reproduction.",
+        "Official REFER loader; each compared method path uses one native SAM-H decode.",
+        "The latent FreeRef path does not consume the baseline LISA mask.",
         "",
         "| Split | N | " + " | ".join(f"{labels[b]} mIoU | {labels[b]} cIoU" for b in BRANCHES) + " |",
         "|---|---:|" + "---:|---:|" * len(BRANCHES),

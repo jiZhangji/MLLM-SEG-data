@@ -27,7 +27,7 @@ run_status "STAMP coarse + FreeRef" "check_training_free_remaining_2gpu_status.s
 run_status "STAMP official SAM-H four branches" "check_frozen_samh_status.sh"
 run_status "Text4Seg-p24 four branches" "check_text4seg_public_p24_status.sh"
 run_status "LISA paper protocol + FreeRef" "check_lisa_paper_freeref_status.sh"
-run_status "LISA official FreeRef before second SAM-H" "check_lisa_official_freeref_sam_status.sh"
+run_status "LISA latent FreeRef before native SAM-H" "check_lisa_official_freeref_sam_status.sh"
 
 echo
 echo "===== Related launchers/workers ====="

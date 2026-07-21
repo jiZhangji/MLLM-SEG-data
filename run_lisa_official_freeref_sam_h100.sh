@@ -10,11 +10,13 @@ MODEL_PATH="${LISA_MODEL_PATH:-${WEIGHTS_ROOT}/lisa/LISA-7B-v1}"
 VISION_TOWER="${LISA_VISION_TOWER:-${WEIGHTS_ROOT}/shared/clip-vit-large-patch14}"
 SAM_PATH="${LISA_SAM_PATH:-${ROOT}/models/SAM/sam_vit_h_4b8939.pth}"
 DATA_ROOT="${LISA_PAPER_DATA_ROOT:-${ROOT}/data/lisa_paper_refer_seg}"
-OUTPUT_ROOT="${LISA_OFFICIAL_FREEREF_SAM_OUTPUT_ROOT:-${ROOT}/outputs/lisa_official_freeref_before_sam}"
+OUTPUT_ROOT="${LISA_LATENT_FREEREF_OUTPUT_ROOT:-${ROOT}/outputs/lisa_latent_freeref_before_sam}"
 PARALLEL_PER_GPU="${LISA_H100_PARALLEL_PER_GPU:-2}"
 MIN_FREE_MB="${LISA_H100_MIN_FREE_MB:-70000}"
 LIMIT_IMAGES="${LISA_OFFICIAL_LIMIT_IMAGES:-0}"
 OFFSET_IMAGES="${LISA_OFFICIAL_OFFSET_IMAGES:-0}"
+SIMILARITY_TEMPERATURE="${LISA_SIMILARITY_TEMPERATURE:-1.0}"
+SIMILARITY_BIAS="${LISA_SIMILARITY_BIAS:-0.5}"
 SPLITS="${LISA_OFFICIAL_SPLITS:-refcoco|unc|val refcoco|unc|testA refcoco|unc|testB refcoco+|unc|val refcoco+|unc|testA refcoco+|unc|testB refcocog|umd|val refcocog|umd|test}"
 
 export HF_HUB_OFFLINE=1
@@ -23,11 +25,11 @@ export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
-mkdir -p "${OUTPUT_ROOT}" "${ROOT}/outputs/lisa_official_freeref_sam_logs"
+mkdir -p "${OUTPUT_ROOT}" "${ROOT}/outputs/lisa_latent_freeref_logs"
 if command -v flock >/dev/null 2>&1; then
-  exec 9>"${ROOT}/outputs/.lisa_official_freeref_sam_h100.lock"
+  exec 9>"${ROOT}/outputs/.lisa_latent_freeref_h100.lock"
   if ! flock -n 9; then
-    echo "Another LISA official FreeRef-before-SAM suite is running."
+    echo "Another LISA latent FreeRef-before-SAM suite is running."
     exit 0
   fi
 fi
@@ -87,6 +89,8 @@ run_split() {
       --workers 4 \
       --limit-images "${LIMIT_IMAGES}" \
       --offset-images "${OFFSET_IMAGES}" \
+      --similarity-temperature "${SIMILARITY_TEMPERATURE}" \
+      --similarity-bias "${SIMILARITY_BIAS}" \
       --seed 0
 }
 
@@ -101,7 +105,7 @@ run_queue() {
       wait_for_gpu "${gpu}"
     fi
     slug="${split//|/_}"
-    run_split "${gpu}" "${split}" >"${ROOT}/outputs/lisa_official_freeref_sam_logs/${slug}.log" 2>&1 &
+    run_split "${gpu}" "${split}" >"${ROOT}/outputs/lisa_latent_freeref_logs/${slug}.log" 2>&1 &
     pids+=("$!")
     names+=("${split}")
     if (( ${#pids[@]} >= PARALLEL_PER_GPU )); then
@@ -120,10 +124,10 @@ run_queue() {
   return "${failed}"
 }
 
-echo "LISA official four-branch scheduler: GPU ${GPUS[0]} and GPU ${GPUS[1]}, ${PARALLEL_PER_GPU} jobs/GPU"
-run_queue "${GPUS[0]}" "${JOBS_A[@]}" >"${ROOT}/outputs/lisa_official_freeref_sam_gpu0.log" 2>&1 &
+echo "LISA latent FreeRef single-SAM scheduler: GPU ${GPUS[0]} and GPU ${GPUS[1]}, ${PARALLEL_PER_GPU} jobs/GPU"
+run_queue "${GPUS[0]}" "${JOBS_A[@]}" >"${ROOT}/outputs/lisa_latent_freeref_gpu0.log" 2>&1 &
 PID_A="$!"
-run_queue "${GPUS[1]}" "${JOBS_B[@]}" >"${ROOT}/outputs/lisa_official_freeref_sam_gpu1.log" 2>&1 &
+run_queue "${GPUS[1]}" "${JOBS_B[@]}" >"${ROOT}/outputs/lisa_latent_freeref_gpu1.log" 2>&1 &
 PID_B="$!"
 FAILED=0
 if ! wait "${PID_A}"; then FAILED=1; fi
@@ -141,5 +145,5 @@ if (( FAILED == 0 && LIMIT_IMAGES == 0 && OFFSET_IMAGES == 0 )); then
       --output-dir "${OUTPUT_ROOT}/combined"
 fi
 
-echo "LISA official FreeRef-before-second-SAM suite stopped; failed=${FAILED}."
+echo "LISA latent FreeRef-before-native-SAM suite stopped; failed=${FAILED}."
 exit "${FAILED}"

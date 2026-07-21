@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
@@ -33,16 +34,16 @@ from .export_lisa_freeref_prompt import probability_to_sam_mask_input
 from .metrics import boundary_iou, mask_iou, paired_statistics
 
 
-BRANCHES = ("baseline", "freeref", "baseline_sam", "freeref_sam")
-PROTOCOL = "lisa_public_v1_official_refer_freeref_before_second_samh_v1"
+BRANCHES = ("baseline", "latent_sam", "freeref_sam")
+PROTOCOL = "lisa_public_v1_official_refer_single_sam_latent_freeref_v1"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate public LISA on the official REFER ValDataset with four paired paths: "
-            "LISA, LISA+FreeRef, LISA+second frozen SAM-H, and "
-            "LISA+FreeRef+second frozen SAM-H."
+            "Evaluate public LISA on the official REFER ValDataset with three independent "
+            "single-SAM paths: native LISA, a latent similarity prompt, and a latent "
+            "similarity prompt refined by FreeRef before the native SAM-H decoder."
         )
     )
     parser.add_argument("--lisa-code-dir", type=Path, required=True)
@@ -75,6 +76,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed-strength", type=float, default=50.0)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--mask-logit-epsilon", type=float, default=1e-4)
+    parser.add_argument("--similarity-temperature", type=float, default=1.0)
+    parser.add_argument("--similarity-bias", type=float, default=0.5)
+    parser.add_argument("--similarity-epsilon", type=float, default=1e-6)
     return parser.parse_args()
 
 
@@ -97,8 +101,9 @@ def _artifact_paths(output_dir: Path, image_index: int, expression_index: int) -
     stem = f"image_{image_index:06d}_expr_{expression_index:04d}"
     paths = {
         "baseline_logits": output_dir / "baseline_logits" / f"{stem}.npz",
+        "latent_probability": output_dir / "latent_probabilities" / f"{stem}.npz",
         "freeref_probability": output_dir / "freeref_probabilities" / f"{stem}.npz",
-        "baseline_sam_logits": output_dir / "baseline_sam_logits" / f"{stem}.npz",
+        "latent_sam_logits": output_dir / "latent_sam_logits" / f"{stem}.npz",
         "freeref_sam_logits": output_dir / "freeref_sam_logits" / f"{stem}.npz",
         "gt": output_dir / "gt_masks" / f"{stem}.png",
         "metadata": output_dir / "metadata" / f"{stem}.json",
@@ -144,8 +149,51 @@ def _load_mask(path: Path) -> np.ndarray:
         return np.asarray(image.convert("L"), dtype=np.uint8) > 0
 
 
-class PairedFreeRefSamDecoder:
-    """Capture LISA's first SAM mask, then compare paired dense-mask re-decodes."""
+def token_image_similarity_probability(
+    image_embeddings: torch.Tensor,
+    sparse_prompt_embeddings: torch.Tensor,
+    temperature: float = 1.0,
+    bias: float = 0.5,
+    epsilon: float = 1e-6,
+) -> torch.Tensor:
+    """Build a calibrated spatial prior directly from pre-decoder LISA/SAM features."""
+    if image_embeddings.ndim != 4:
+        raise ValueError(
+            f"image_embeddings must have shape [B, C, H, W], got {tuple(image_embeddings.shape)}"
+        )
+    if sparse_prompt_embeddings.ndim != 3:
+        raise ValueError(
+            "sparse_prompt_embeddings must have shape [N, T, C], got "
+            f"{tuple(sparse_prompt_embeddings.shape)}"
+        )
+    if temperature <= 0 or epsilon <= 0:
+        raise ValueError("temperature and epsilon must be positive.")
+
+    queries = sparse_prompt_embeddings.float().mean(dim=1)
+    features = image_embeddings.float()
+    if features.shape[0] == 1:
+        features = features.expand(queries.shape[0], -1, -1, -1)
+    elif features.shape[0] != queries.shape[0]:
+        raise ValueError(
+            f"Cannot pair {features.shape[0]} image embeddings with {queries.shape[0]} prompts."
+        )
+    if features.shape[1] != queries.shape[1]:
+        raise ValueError(
+            f"Feature dimension {features.shape[1]} does not match prompt dimension {queries.shape[1]}."
+        )
+
+    queries = F.normalize(queries, dim=-1, eps=epsilon)
+    features = F.normalize(features, dim=1, eps=epsilon)
+    similarity = torch.einsum("nc,nchw->nhw", queries, features)
+    flat = similarity.flatten(1)
+    center = flat.mean(dim=1, keepdim=True)
+    scale = flat.std(dim=1, keepdim=True, unbiased=False).clamp_min(epsilon)
+    standardized = (flat - center - bias * scale) / (temperature * scale)
+    return torch.sigmoid(standardized).reshape_as(similarity)
+
+
+class LatentFreeRefSamDecoder:
+    """Compare independent native, latent-prompt, and FreeRef-prompt SAM paths."""
 
     def __init__(
         self,
@@ -156,6 +204,9 @@ class PairedFreeRefSamDecoder:
         refiner: TrainingFreeUncertaintyRefiner,
         mask_transform: Any,
         epsilon: float,
+        similarity_temperature: float,
+        similarity_bias: float,
+        similarity_epsilon: float,
     ) -> None:
         self.visual_model = visual_model
         self.image = image
@@ -164,21 +215,26 @@ class PairedFreeRefSamDecoder:
         self.refiner = refiner
         self.mask_transform = mask_transform
         self.epsilon = epsilon
+        self.similarity_temperature = similarity_temperature
+        self.similarity_bias = similarity_bias
+        self.similarity_epsilon = similarity_epsilon
         self.decoder = visual_model.mask_decoder
         self.original_forward = self.decoder.forward
         self.calls = 0
         self.baseline_logits: np.ndarray | None = None
+        self.latent_probability: np.ndarray | None = None
         self.freeref_probability: np.ndarray | None = None
-        self.baseline_sam_logits: np.ndarray | None = None
+        self.latent_sam_logits: np.ndarray | None = None
         self.freeref_sam_logits: np.ndarray | None = None
         self.timings = {
-            "first_sam_seconds": 0.0,
+            "latent_prior_seconds": 0.0,
             "freeref_seconds": 0.0,
-            "baseline_second_sam_seconds": 0.0,
-            "freeref_second_sam_seconds": 0.0,
+            "baseline_sam_seconds": 0.0,
+            "latent_sam_seconds": 0.0,
+            "freeref_sam_seconds": 0.0,
         }
 
-    def __enter__(self) -> "PairedFreeRefSamDecoder":
+    def __enter__(self) -> "LatentFreeRefSamDecoder":
         self.decoder.forward = self._forward
         return self
 
@@ -209,12 +265,12 @@ class PairedFreeRefSamDecoder:
         )
         return self.visual_model.prompt_encoder._embed_masks(mask_prompts)
 
-    def _second_pass(
+    def _prompted_pass(
         self, probabilities: np.ndarray, kwargs: dict[str, Any]
     ) -> tuple[torch.Tensor, torch.Tensor, np.ndarray]:
-        second_kwargs = dict(kwargs)
-        second_kwargs["dense_prompt_embeddings"] = self._dense_prompt(probabilities, kwargs)
-        low_res, quality = self.original_forward(**second_kwargs)
+        prompted_kwargs = dict(kwargs)
+        prompted_kwargs["dense_prompt_embeddings"] = self._dense_prompt(probabilities, kwargs)
+        low_res, quality = self.original_forward(**prompted_kwargs)
         full = self._postprocess(low_res).detach().float().cpu().numpy()
         return low_res, quality, full
 
@@ -227,16 +283,26 @@ class PairedFreeRefSamDecoder:
 
         torch.cuda.synchronize()
         started = time.perf_counter()
-        baseline_low_res, baseline_quality = self.original_forward(**kwargs)
-        baseline_full = self._postprocess(baseline_low_res)
+        latent_grid = token_image_similarity_probability(
+            kwargs["image_embeddings"],
+            kwargs["sparse_prompt_embeddings"],
+            temperature=self.similarity_temperature,
+            bias=self.similarity_bias,
+            epsilon=self.similarity_epsilon,
+        )
+        latent_full = F.interpolate(
+            latent_grid[:, None],
+            size=self.original_size,
+            mode="bilinear",
+            align_corners=False,
+        )[:, 0]
         torch.cuda.synchronize()
-        self.timings["first_sam_seconds"] = time.perf_counter() - started
-        self.baseline_logits = baseline_full.detach().float().cpu().numpy()
-        baseline_probability = 1.0 / (1.0 + np.exp(-np.clip(self.baseline_logits, -30.0, 30.0)))
+        self.timings["latent_prior_seconds"] = time.perf_counter() - started
+        self.latent_probability = latent_full.detach().float().cpu().numpy()
 
         started = time.perf_counter()
         refined = []
-        for probability in baseline_probability:
+        for probability in self.latent_probability:
             output = self.refiner.refine_probability(self.image, probability)
             refined.append(np.asarray(output["refined_probability"], dtype=np.float32))
         self.freeref_probability = np.stack(refined, axis=0)
@@ -244,17 +310,24 @@ class PairedFreeRefSamDecoder:
 
         torch.cuda.synchronize()
         started = time.perf_counter()
-        _, _, self.baseline_sam_logits = self._second_pass(baseline_probability, kwargs)
+        baseline_low_res, baseline_quality = self.original_forward(**kwargs)
+        self.baseline_logits = self._postprocess(baseline_low_res).detach().float().cpu().numpy()
         torch.cuda.synchronize()
-        self.timings["baseline_second_sam_seconds"] = time.perf_counter() - started
+        self.timings["baseline_sam_seconds"] = time.perf_counter() - started
 
         torch.cuda.synchronize()
         started = time.perf_counter()
-        freeref_low_res, freeref_quality, self.freeref_sam_logits = self._second_pass(
+        _, _, self.latent_sam_logits = self._prompted_pass(self.latent_probability, kwargs)
+        torch.cuda.synchronize()
+        self.timings["latent_sam_seconds"] = time.perf_counter() - started
+
+        torch.cuda.synchronize()
+        started = time.perf_counter()
+        freeref_low_res, freeref_quality, self.freeref_sam_logits = self._prompted_pass(
             self.freeref_probability, kwargs
         )
         torch.cuda.synchronize()
-        self.timings["freeref_second_sam_seconds"] = time.perf_counter() - started
+        self.timings["freeref_sam_seconds"] = time.perf_counter() - started
         return freeref_low_res, freeref_quality
 
 
@@ -307,14 +380,13 @@ def summarize_rows(rows: list[dict[str, Any]], bootstrap_samples: int, seed: int
 def _comparison(summary: dict[str, Any], split: str) -> str:
     labels = {
         "baseline": "LISA",
-        "freeref": "LISA + FreeRef",
-        "baseline_sam": "LISA + second SAM-H",
-        "freeref_sam": "LISA + FreeRef + second SAM-H",
+        "latent_sam": "LISA + latent prompt + SAM-H",
+        "freeref_sam": "LISA + latent FreeRef + SAM-H",
     }
     lines = [
-        "# LISA Official REFER + FreeRef Before Second SAM-H",
+        "# LISA Official REFER + Latent FreeRef Before Native SAM-H",
         "",
-        f"Split: `{split}`; public checkpoint paired protocol; N={summary['samples']}.",
+        f"Split: `{split}`; independent single-SAM paths; N={summary['samples']}.",
         "",
         "| Branch | mIoU | cIoU | Boundary IoU |",
         "|---|---:|---:|---:|",
@@ -334,6 +406,8 @@ def main() -> int:
         raise ValueError("workers, limits, offsets, and tolerance must be non-negative.")
     if not torch.cuda.is_available():
         raise RuntimeError("LISA paired SAM evaluation requires a CUDA GPU.")
+    if args.similarity_temperature <= 0 or args.similarity_epsilon <= 0:
+        raise ValueError("similarity temperature and epsilon must be positive.")
     dataset_name, split_by, split = _validate_layout(args)
 
     code_dir = args.lisa_code_dir.expanduser().resolve()
@@ -432,10 +506,11 @@ def main() -> int:
     exported_expressions = 0
     total_seconds = 0.0
     timing_totals = {
-        "first_sam_seconds": 0.0,
+        "latent_prior_seconds": 0.0,
         "freeref_seconds": 0.0,
-        "baseline_second_sam_seconds": 0.0,
-        "freeref_second_sam_seconds": 0.0,
+        "baseline_sam_seconds": 0.0,
+        "latent_sam_seconds": 0.0,
+        "freeref_sam_seconds": 0.0,
     }
 
     for image_index, batch in tqdm(
@@ -465,7 +540,7 @@ def main() -> int:
             original_size = tuple(int(value) for value in target_group.shape[-2:])
             resize_shape = tuple(int(value) for value in batch["resize_list"][0])
             image = np.asarray(Image.open(image_path).convert("RGB"))
-            adapter = PairedFreeRefSamDecoder(
+            adapter = LatentFreeRefSamDecoder(
                 model.model.visual_model,
                 image,
                 resize_shape,
@@ -473,6 +548,9 @@ def main() -> int:
                 refiner,
                 mask_transform,
                 args.mask_logit_epsilon,
+                args.similarity_temperature,
+                args.similarity_bias,
+                args.similarity_epsilon,
             )
             torch.cuda.synchronize()
             started = time.perf_counter()
@@ -486,17 +564,17 @@ def main() -> int:
                 value is None
                 for value in (
                     adapter.baseline_logits,
+                    adapter.latent_probability,
                     adapter.freeref_probability,
-                    adapter.baseline_sam_logits,
+                    adapter.latent_sam_logits,
                     adapter.freeref_sam_logits,
                 )
             ):
-                raise RuntimeError("LISA paired decoder did not capture all four branches.")
+                raise RuntimeError("LISA latent decoder did not capture all paired branches.")
             target_batch = output["gt_masks"][0].detach().cpu().numpy() > 0
             branch_arrays = {
                 "baseline": np.asarray(adapter.baseline_logits),
-                "freeref": np.asarray(adapter.freeref_probability),
-                "baseline_sam": np.asarray(adapter.baseline_sam_logits),
+                "latent_sam": np.asarray(adapter.latent_sam_logits),
                 "freeref_sam": np.asarray(adapter.freeref_sam_logits),
             }
             if any(len(value) != expression_count for value in branch_arrays.values()):
@@ -506,23 +584,39 @@ def main() -> int:
                 key: value * share for key, value in adapter.timings.items()
             }
             per_expression_timing["total_seconds"] = elapsed * share
+            paired_components = sum(adapter.timings.values())
+            shared_seconds = max(elapsed - paired_components, 0.0) * share
+            per_expression_timing["shared_model_seconds"] = shared_seconds
+            per_expression_timing["baseline_estimated_seconds"] = (
+                shared_seconds + adapter.timings["baseline_sam_seconds"] * share
+            )
+            per_expression_timing["freeref_sam_estimated_seconds"] = (
+                shared_seconds
+                + (
+                    adapter.timings["latent_prior_seconds"]
+                    + adapter.timings["freeref_seconds"]
+                    + adapter.timings["freeref_sam_seconds"]
+                )
+                * share
+            )
             for key, value in adapter.timings.items():
                 timing_totals[key] += value
             for expression_index, paths in enumerate(paths_list):
                 baseline_logits = branch_arrays["baseline"][expression_index]
-                freeref_probability = branch_arrays["freeref"][expression_index]
-                baseline_sam_logits = branch_arrays["baseline_sam"][expression_index]
+                latent_probability = np.asarray(adapter.latent_probability)[expression_index]
+                freeref_probability = np.asarray(adapter.freeref_probability)[expression_index]
+                latent_sam_logits = branch_arrays["latent_sam"][expression_index]
                 freeref_sam_logits = branch_arrays["freeref_sam"][expression_index]
                 target = target_batch[expression_index]
                 masks = {
                     "baseline": baseline_logits > 0.0,
-                    "freeref": freeref_probability >= refiner_config.threshold,
-                    "baseline_sam": baseline_sam_logits > 0.0,
+                    "latent_sam": latent_sam_logits > 0.0,
                     "freeref_sam": freeref_sam_logits > 0.0,
                 }
                 _atomic_array(paths["baseline_logits"], "logits", baseline_logits)
+                _atomic_array(paths["latent_probability"], "probability", latent_probability)
                 _atomic_array(paths["freeref_probability"], "probability", freeref_probability)
-                _atomic_array(paths["baseline_sam_logits"], "logits", baseline_sam_logits)
+                _atomic_array(paths["latent_sam_logits"], "logits", latent_sam_logits)
                 _atomic_array(paths["freeref_sam_logits"], "logits", freeref_sam_logits)
                 for branch, mask in masks.items():
                     _atomic_mask(paths[f"{branch}_mask"], mask)
@@ -552,7 +646,7 @@ def main() -> int:
     baseline_gap = summary["baseline_cIoU"] * 100.0 - paper_ciou
     summary.update(
         {
-            "source": "lisa_official_refer_paired_freeref_sam",
+            "source": "lisa_official_refer_latent_freeref_single_sam",
             "protocol": PROTOCOL,
             "checkpoint_scope": "public_checkpoint_paired_transfer_not_table3_reproduction",
             "paper_row": args.paper_row,
@@ -577,20 +671,36 @@ def main() -> int:
             "lisa_code_revision": _git_revision(code_dir),
             "precision": args.precision,
             "model_calls": model_calls,
+            "sam_decoder_calls_per_paired_evaluation": 3,
+            "sam_decoder_calls_per_method_path": 1,
+            "method_data_dependency": "latent_freeref_uses_only_pre_decoder_embeddings_and_rgb",
             "exported_expressions": exported_expressions,
             "reused_expressions": reused_expressions,
             "seconds_per_sample": float(np.mean([row["total_seconds"] for row in rows])),
+            "baseline_estimated_seconds_per_sample": float(
+                np.mean([row["baseline_estimated_seconds"] for row in rows])
+            ),
+            "freeref_sam_estimated_seconds_per_sample": float(
+                np.mean([row["freeref_sam_estimated_seconds"] for row in rows])
+            ),
             "timing_means": {
                 key: float(np.mean([row[key] for row in rows]))
                 for key in (
-                    "first_sam_seconds",
+                    "latent_prior_seconds",
                     "freeref_seconds",
-                    "baseline_second_sam_seconds",
-                    "freeref_second_sam_seconds",
+                    "baseline_sam_seconds",
+                    "latent_sam_seconds",
+                    "freeref_sam_seconds",
                 )
             },
             "timing_totals_current_process": timing_totals,
             "config": asdict(refiner_config),
+            "latent_similarity_config": {
+                "temperature": args.similarity_temperature,
+                "bias": args.similarity_bias,
+                "epsilon": args.similarity_epsilon,
+                "calibration": "per_expression_spatial_mean_std",
+            },
             "loading_info": {
                 key: [str(item) for item in loading_info.get(key, [])]
                 for key in ("missing_keys", "unexpected_keys", "mismatched_keys")
