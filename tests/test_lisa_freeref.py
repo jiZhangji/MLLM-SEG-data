@@ -20,6 +20,10 @@ from universal_freeref.export_lisa_freeref_prompt import (
     probability_to_sam_mask_input,
 )
 from universal_freeref.evaluate_lisa_freeref_prompt import summarize_rows
+from universal_freeref.eval_lisa_official_freeref_sam import (
+    PROTOCOL as LISA_OFFICIAL_FREEREF_SAM_PROTOCOL,
+    summarize_rows as summarize_official_freeref_sam_rows,
+)
 from universal_freeref.eval_lisa_paper_protocol import (
     EXPECTED_EXPRESSIONS,
     PAPER_CIOU,
@@ -251,3 +255,42 @@ def test_all_experiment_status_script_covers_the_three_model_families() -> None:
     assert "check_frozen_samh_status.sh" in text
     assert "check_text4seg_public_p24_status.sh" in text
     assert "check_lisa_paper_freeref_status.sh" in text
+    assert "check_lisa_official_freeref_sam_status.sh" in text
+
+
+def test_lisa_official_freeref_sam_summary_contains_all_four_paired_branches() -> None:
+    rows = []
+    for baseline, freeref, baseline_sam, freeref_sam in (
+        (0.5, 0.6, 0.7, 0.8),
+        (0.4, 0.5, 0.6, 0.7),
+    ):
+        row = {}
+        for branch, iou in (
+            ("baseline", baseline),
+            ("freeref", freeref),
+            ("baseline_sam", baseline_sam),
+            ("freeref_sam", freeref_sam),
+        ):
+            row[f"{branch}_iou"] = iou
+            row[f"{branch}_boundary_iou"] = iou
+            row[f"_{branch}_intersection"] = int(iou * 10)
+            row[f"_{branch}_union"] = 10
+        rows.append(row)
+    summary = summarize_official_freeref_sam_rows(rows, bootstrap_samples=0, seed=0)
+    assert summary["samples"] == 2
+    assert np.isclose(summary["baseline_mean_iou"], 0.45)
+    assert np.isclose(summary["freeref_sam_mean_iou"], 0.75)
+    assert summary["freeref_sam_improved_samples"] == 2
+
+
+def test_lisa_h100_runner_uses_official_refer_and_freeref_before_second_sam() -> None:
+    runner = (ROOT / "run_lisa_official_freeref_sam_h100.sh").read_text(encoding="utf-8")
+    evaluator = (ROOT / "universal_freeref/eval_lisa_official_freeref_sam.py").read_text(
+        encoding="utf-8"
+    )
+    assert "LISA_H100_PARALLEL_PER_GPU:-2" in runner
+    assert "eval_lisa_official_freeref_sam" in runner
+    assert "ValDataset" in evaluator
+    assert "baseline_sam" in evaluator
+    assert "freeref_sam" in evaluator
+    assert LISA_OFFICIAL_FREEREF_SAM_PROTOCOL in evaluator
