@@ -5,9 +5,12 @@ ROOT="${MLLM_SEG_ROOT:-/inspire/hdd/global_user/liuxiaotong-253108540242/yanggan
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODEL_PATH="${TEXT4SEG_P24_MODEL_PATH:-lmc22/text4seg-llava-7b-p24}"
 CUDA_DEVICE="${CUDA_DEVICE:-0}"
+CUDA_DEVICES_TEXT="${TEXT4SEG_P24_CUDA_DEVICES:-${CUDA_DEVICE}}"
 PARALLEL_JOBS="${TEXT4SEG_P24_PARALLEL_JOBS:-4}"
 MIN_FREE_MB="${TEXT4SEG_P24_MIN_FREE_MB:-$((18000 * PARALLEL_JOBS))}"
-SPLITS="${TEXT4SEG_P24_SPLITS:-refcoco_val refcoco_testA refcoco_testB refcoco+_val refcoco+_testA refcoco+_testB refcocog_val refcocog_test}"
+ALL_SPLITS="refcoco_val refcoco_testA refcoco_testB refcoco+_val refcoco+_testA refcoco+_testB refcocog_val refcocog_test"
+SPLITS="${TEXT4SEG_P24_SPLITS:-${ALL_SPLITS}}"
+SUMMARY_SPLITS="${TEXT4SEG_P24_SUMMARY_SPLITS:-${ALL_SPLITS}}"
 COMBINED_OUTPUT="${TEXT4SEG_P24_COMBINED_OUTPUT:-${ROOT}/outputs/text4seg_public_p24_freeref_samh_full_comparison}"
 VISION_TOWER="${TEXT4SEG_VISION_TOWER:-${ROOT}/models/freeref_missing_methods/shared/clip-vit-large-patch14-336}"
 SAM_PATH="${TEXT4SEG_SAM_PATH:-${ROOT}/models/SAM/sam_vit_h_4b8939.pth}"
@@ -23,6 +26,21 @@ if ! [[ "${MIN_FREE_MB}" =~ ^[0-9]+$ ]]; then
   echo "ERROR: TEXT4SEG_P24_MIN_FREE_MB must be a non-negative integer." >&2
   exit 1
 fi
+read -r -a CUDA_DEVICES <<< "${CUDA_DEVICES_TEXT}"
+if (( ${#CUDA_DEVICES[@]} == 0 )); then
+  echo "ERROR: TEXT4SEG_P24_CUDA_DEVICES selected no GPUs." >&2
+  exit 1
+fi
+for GPU_ID in "${CUDA_DEVICES[@]}"; do
+  if ! [[ "${GPU_ID}" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: invalid physical GPU index in TEXT4SEG_P24_CUDA_DEVICES: ${GPU_ID}" >&2
+    exit 1
+  fi
+  if ! nvidia-smi -i "${GPU_ID}" --query-gpu=name --format=csv,noheader >/dev/null 2>&1; then
+    echo "ERROR: physical GPU ${GPU_ID} is not available." >&2
+    exit 1
+  fi
+done
 if [[ "${MODEL_PATH,,}" != *p24* ]]; then
   echo "ERROR: TEXT4SEG_P24_MODEL_PATH must identify the public p24 checkpoint: ${MODEL_PATH}" >&2
   exit 1
@@ -54,17 +72,20 @@ if command -v flock >/dev/null 2>&1; then
   fi
 fi
 
-while true; do
-  FREE_MB="$(nvidia-smi -i "${CUDA_DEVICE}" --query-gpu=memory.free --format=csv,noheader,nounits | tr -dc '0-9')"
-  if [[ -n "${FREE_MB}" ]] && (( FREE_MB >= MIN_FREE_MB )); then
-    break
-  fi
-  echo "GPU ${CUDA_DEVICE} free: ${FREE_MB:-unknown} MiB; waiting 10 seconds for ${MIN_FREE_MB} MiB..."
-  sleep 10
+for GPU_ID in "${CUDA_DEVICES[@]}"; do
+  while true; do
+    FREE_MB="$(nvidia-smi -i "${GPU_ID}" --query-gpu=memory.free --format=csv,noheader,nounits | tr -dc '0-9')"
+    if [[ -n "${FREE_MB}" ]] && (( FREE_MB >= MIN_FREE_MB )); then
+      break
+    fi
+    echo "GPU ${GPU_ID} free: ${FREE_MB:-unknown} MiB; waiting 10 seconds for ${MIN_FREE_MB} MiB..."
+    sleep 10
+  done
 done
 
 run_split() {
   local SPLIT="$1"
+  local GPU_ID="$2"
   local EVAL_JSON BASE_OUTPUT REFINE_OUTPUT MANIFEST SAMPLES EXPECTED SAMH_OUTPUT SAMH_SUMMARY PAIRED_READY
   EVAL_JSON="${ROOT}/code/STAMP/playground/data/json_eval_baseline/${SPLIT}.json"
   BASE_OUTPUT="${ROOT}/outputs/text4seg_official_${SPLIT}"
@@ -91,7 +112,7 @@ run_split() {
     return 0
   fi
 
-  echo "RUN Text4Seg public-p24 ${SPLIT}: ${SAMPLES}/${EXPECTED}"
+  echo "RUN Text4Seg public-p24 ${SPLIT} on GPU ${GPU_ID}: ${SAMPLES}/${EXPECTED}"
   PAIRED_READY=0
   if [[ -f "${BASE_OUTPUT}/export_summary.json" && -f "${REFINE_OUTPUT}/eval_summary.json" && -f "${MANIFEST}" ]]; then
     PAIRED_READY="$(conda run -n "${CONDA_ENV}" python -c \
@@ -110,7 +131,7 @@ run_split() {
     TEXT4SEG_EVAL_JSON="${EVAL_JSON}" \
     TEXT4SEG_RESULTS_ROOT="${BASE_OUTPUT}" \
     TEXT4SEG_REFINE_OUTPUT="${REFINE_OUTPUT}" \
-    CUDA_DEVICE="${CUDA_DEVICE}" \
+    CUDA_DEVICE="${GPU_ID}" \
       bash "${SCRIPT_DIR}/run_text4seg_training_free_eval.sh"
   fi
 
@@ -118,7 +139,7 @@ run_split() {
     echo "ERROR: Text4Seg manifest was not generated: ${MANIFEST}" >&2
     return 1
   fi
-  CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}" \
+  CUDA_VISIBLE_DEVICES="${GPU_ID}" PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}" \
     conda run --no-capture-output -n "${CONDA_ENV}" \
     python -m training_free_refine.eval_text4seg_sam_h \
       --manifest "${MANIFEST}" \
@@ -134,13 +155,14 @@ run_split() {
 }
 
 wait_batch() {
-  local index pid split log_path
+  local index pid split gpu log_path
   for index in "${!ACTIVE_PIDS[@]}"; do
     pid="${ACTIVE_PIDS[$index]}"
     split="${ACTIVE_SPLITS[$index]}"
+    gpu="${ACTIVE_GPUS[$index]}"
     log_path="${ACTIVE_LOGS[$index]}"
     if wait "${pid}"; then
-      echo "DONE ${split}; worker log: ${log_path}"
+      echo "DONE ${split} on GPU ${gpu}; worker log: ${log_path}"
     else
       echo "ERROR ${split}; worker log: ${log_path}" >&2
       tail -n 40 "${log_path}" >&2 || true
@@ -149,25 +171,32 @@ wait_batch() {
   done
   ACTIVE_PIDS=()
   ACTIVE_SPLITS=()
+  ACTIVE_GPUS=()
   ACTIVE_LOGS=()
 }
 
 cd "${SCRIPT_DIR}"
 declare -a ACTIVE_PIDS=()
 declare -a ACTIVE_SPLITS=()
+declare -a ACTIVE_GPUS=()
 declare -a ACTIVE_LOGS=()
 declare -a FAILED_SPLITS=()
 FAILED=0
 
-echo "Text4Seg public-p24 scheduler: parallel_jobs=${PARALLEL_JOBS}, gpu=${CUDA_DEVICE}, min_free_mb=${MIN_FREE_MB}"
+echo "Text4Seg public-p24 scheduler: parallel_jobs=${PARALLEL_JOBS}, gpus=${CUDA_DEVICES_TEXT}, min_free_mb_per_gpu=${MIN_FREE_MB}"
+JOB_INDEX=0
 for SPLIT in ${SPLITS}; do
+  GPU_INDEX=$((JOB_INDEX % ${#CUDA_DEVICES[@]}))
+  GPU_ID="${CUDA_DEVICES[$GPU_INDEX]}"
   SAFE_SPLIT="${SPLIT//+/plus}"
   WORKER_LOG="${WORKER_LOG_DIR}/${SAFE_SPLIT}.log"
-  run_split "${SPLIT}" >"${WORKER_LOG}" 2>&1 &
+  run_split "${SPLIT}" "${GPU_ID}" >"${WORKER_LOG}" 2>&1 &
   ACTIVE_PIDS+=("$!")
   ACTIVE_SPLITS+=("${SPLIT}")
+  ACTIVE_GPUS+=("${GPU_ID}")
   ACTIVE_LOGS+=("${WORKER_LOG}")
-  echo "START ${SPLIT}; worker log: ${WORKER_LOG}"
+  echo "START ${SPLIT} on GPU ${GPU_ID}; worker log: ${WORKER_LOG}"
+  JOB_INDEX=$((JOB_INDEX + 1))
   if (( ${#ACTIVE_PIDS[@]} >= PARALLEL_JOBS )); then
     wait_batch
   fi
@@ -178,16 +207,20 @@ fi
 
 if (( ${#FAILED_SPLITS[@]} > 0 )); then
   echo "Retrying ${#FAILED_SPLITS[@]} failed split(s) serially; partial artifacts will be reused."
+  RETRY_INDEX=0
   for SPLIT in "${FAILED_SPLITS[@]}"; do
+    GPU_INDEX=$((RETRY_INDEX % ${#CUDA_DEVICES[@]}))
+    GPU_ID="${CUDA_DEVICES[$GPU_INDEX]}"
     SAFE_SPLIT="${SPLIT//+/plus}"
     RETRY_LOG="${WORKER_LOG_DIR}/${SAFE_SPLIT}.retry.log"
-    if run_split "${SPLIT}" >"${RETRY_LOG}" 2>&1; then
+    if run_split "${SPLIT}" "${GPU_ID}" >"${RETRY_LOG}" 2>&1; then
       echo "RETRY DONE ${SPLIT}; worker log: ${RETRY_LOG}"
     else
       echo "RETRY ERROR ${SPLIT}; worker log: ${RETRY_LOG}" >&2
       tail -n 40 "${RETRY_LOG}" >&2 || true
       FAILED=1
     fi
+    RETRY_INDEX=$((RETRY_INDEX + 1))
   done
 fi
 if (( FAILED != 0 )); then
@@ -196,7 +229,7 @@ if (( FAILED != 0 )); then
 fi
 
 SUMMARY_ARGS=()
-for SPLIT in ${SPLITS}; do
+for SPLIT in ${SUMMARY_SPLITS}; do
   SUMMARY_ARGS+=(--summary "${SPLIT}=${ROOT}/outputs/text4seg_public_p24_samh_${SPLIT}/eval_summary.json")
 done
 conda run --no-capture-output -n "${CONDA_ENV}" \
