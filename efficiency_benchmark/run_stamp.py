@@ -74,6 +74,10 @@ def main() -> int:
     gpu_name = assert_rtx_4090(args.allow_other_gpu)
     root = args.root.resolve()
     code_dir = args.stamp_code_dir.resolve()
+    tools_root = Path(__file__).resolve().parents[1]
+    refine_stamp_source = tools_root / "offline_rstamp" / "refine_stamp_src"
+    if str(refine_stamp_source) not in sys.path:
+        sys.path.insert(0, str(refine_stamp_source))
     sys.path.insert(0, str(code_dir))
     try:
         from segment_predictor import GenerativeSegmenter  # type: ignore[import-not-found]
