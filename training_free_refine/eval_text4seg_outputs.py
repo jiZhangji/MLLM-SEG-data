@@ -36,6 +36,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--background-seed", type=float, default=0.1)
     parser.add_argument("--seed-strength", type=float, default=50.0)
     parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--uncertainty-aware-anchoring",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--appearance-weighted-graph",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--selective-fusion",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     return parser.parse_args()
 
 
@@ -128,6 +143,9 @@ def main() -> int:
         background_seed=args.background_seed,
         seed_strength=args.seed_strength,
         threshold=args.threshold,
+        uncertainty_aware_anchoring=args.uncertainty_aware_anchoring,
+        appearance_weighted_graph=args.appearance_weighted_graph,
+        selective_fusion=args.selective_fusion,
     )
     refiner = TrainingFreeUncertaintyRefiner(config)
     args.output_dir.mkdir(parents=True, exist_ok=True)

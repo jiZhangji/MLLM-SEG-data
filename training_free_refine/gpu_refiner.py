@@ -249,8 +249,11 @@ class GpuTrainingFreeUncertaintyRefiner:
             )
             positive = color_distance[color_distance > 1e-8]
             color_scale = cp.median(positive) if positive.size else cp.asarray(1.0, cp.float32)
-            weights = cp.exp(-cp.square(color_distance / cp.maximum(color_scale, 1e-6)))
-            weights = cp.clip(weights, 1e-4, 1.0)
+            if self.config.appearance_weighted_graph:
+                weights = cp.exp(-cp.square(color_distance / cp.maximum(color_scale, 1e-6)))
+                weights = cp.clip(weights, 1e-4, 1.0)
+            else:
+                weights = cp.ones_like(color_distance, dtype=cp.float32)
             rows = cp.concatenate((pairs[:, 0], pairs[:, 1]))
             cols = cp.concatenate((pairs[:, 1], pairs[:, 0]))
             values = cp.concatenate((weights, weights))
@@ -263,15 +266,20 @@ class GpuTrainingFreeUncertaintyRefiner:
 
         degree = cp.asarray(affinity.sum(axis=1)).reshape(-1)
         laplacian = sparse.diags(degree) - affinity
-        confidence = cp.power(
-            cp.clip(1.0 - mean_uncertainty, 0.0, 1.0), self.config.confidence_power
-        ) + 1e-4
+        if self.config.uncertainty_aware_anchoring:
+            confidence = cp.power(
+                cp.clip(1.0 - mean_uncertainty, 0.0, 1.0),
+                self.config.confidence_power,
+            ) + 1e-4
+        else:
+            confidence = cp.ones(segment_count, dtype=cp.float32)
         targets = mean_probability.copy()
         foreground = mean_probability >= self.config.foreground_seed
         background = mean_probability <= self.config.background_seed
-        confidence[foreground | background] += self.config.seed_strength
-        targets[foreground] = 1.0
-        targets[background] = 0.0
+        if self.config.uncertainty_aware_anchoring:
+            confidence[foreground | background] += self.config.seed_strength
+            targets[foreground] = 1.0
+            targets[background] = 0.0
         system = (
             sparse.diags(confidence)
             + self.config.graph_lambda * laplacian
@@ -298,7 +306,11 @@ class GpuTrainingFreeUncertaintyRefiner:
             solution = spsolve(system, rhs)
         solution = cp.clip(solution, 0.0, 1.0)
         graph_probability = solution[labels]
-        fusion = cp.power(uncertainty_map, self.config.fusion_power)
+        fusion = (
+            cp.power(uncertainty_map, self.config.fusion_power)
+            if self.config.selective_fusion
+            else cp.ones_like(uncertainty_map, dtype=cp.float32)
+        )
         refined = cp.clip((1.0 - fusion) * coarse + fusion * graph_probability, 0.0, 1.0)
         return {
             "coarse_probability": _as_torch(coarse),

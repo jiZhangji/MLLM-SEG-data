@@ -26,6 +26,9 @@ class TrainingFreeRefineConfig:
     threshold: float = 0.5
     solver_tolerance: float = 1e-5
     solver_max_iterations: int = 500
+    uncertainty_aware_anchoring: bool = True
+    appearance_weighted_graph: bool = True
+    selective_fusion: bool = True
 
     def __post_init__(self) -> None:
         if self.n_segments <= 1:
@@ -118,8 +121,11 @@ def _solve_graph(
         color_distance = np.linalg.norm(mean_color[pairs[:, 0]] - mean_color[pairs[:, 1]], axis=1)
         positive = color_distance[color_distance > 1e-8]
         color_scale = float(np.median(positive)) if positive.size else 1.0
-        weights = np.exp(-np.square(color_distance / max(color_scale, 1e-6)))
-        weights = np.clip(weights, 1e-4, 1.0)
+        if config.appearance_weighted_graph:
+            weights = np.exp(-np.square(color_distance / max(color_scale, 1e-6)))
+            weights = np.clip(weights, 1e-4, 1.0)
+        else:
+            weights = np.ones_like(color_distance, dtype=np.float64)
         rows = np.concatenate([pairs[:, 0], pairs[:, 1]])
         cols = np.concatenate([pairs[:, 1], pairs[:, 0]])
         values = np.concatenate([weights, weights])
@@ -130,14 +136,24 @@ def _solve_graph(
 
     degree = np.asarray(affinity.sum(axis=1)).reshape(-1)
     laplacian = sparse.diags(degree) - affinity
-    confidence = np.power(np.clip(1.0 - mean_uncertainty, 0.0, 1.0), config.confidence_power) + 1e-4
+    if config.uncertainty_aware_anchoring:
+        confidence = (
+            np.power(
+                np.clip(1.0 - mean_uncertainty, 0.0, 1.0),
+                config.confidence_power,
+            )
+            + 1e-4
+        )
+    else:
+        confidence = np.ones(segment_count, dtype=np.float64)
     targets = mean_probability.copy()
 
     foreground = mean_probability >= config.foreground_seed
     background = mean_probability <= config.background_seed
-    confidence[foreground | background] += config.seed_strength
-    targets[foreground] = 1.0
-    targets[background] = 0.0
+    if config.uncertainty_aware_anchoring:
+        confidence[foreground | background] += config.seed_strength
+        targets[foreground] = 1.0
+        targets[background] = 0.0
 
     system = sparse.diags(confidence) + config.graph_lambda * laplacian + sparse.eye(segment_count) * 1e-8
     rhs = confidence * targets
@@ -167,6 +183,8 @@ def _solve_graph(
         "color_scale": color_scale,
         "foreground_seeds": float(foreground.sum()),
         "background_seeds": float(background.sum()),
+        "uncertainty_aware_anchoring": float(config.uncertainty_aware_anchoring),
+        "appearance_weighted_graph": float(config.appearance_weighted_graph),
         "solver_info": float(solver_info),
     }
     return graph_probability, diagnostics
@@ -251,7 +269,11 @@ class TrainingFreeUncertaintyRefiner:
             uncertainty_map,
             self.config,
         )
-        fusion = np.power(uncertainty_map, self.config.fusion_power)
+        fusion = (
+            np.power(uncertainty_map, self.config.fusion_power)
+            if self.config.selective_fusion
+            else np.ones_like(uncertainty_map, dtype=np.float64)
+        )
         refined = np.clip((1.0 - fusion) * coarse + fusion * graph_probability, 0.0, 1.0)
         return {
             "coarse_probability": torch.from_numpy(coarse.astype(np.float32)),

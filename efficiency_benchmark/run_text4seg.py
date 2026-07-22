@@ -31,7 +31,7 @@ from training_free_refine.export_text4seg_masks import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Unified RTX 4090 Text4Seg end-to-end benchmark.")
+    parser = argparse.ArgumentParser(description="Unified single-GPU Text4Seg end-to-end benchmark.")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--text4seg-code-dir", type=Path, required=True)
     parser.add_argument("--model-path", required=True)
@@ -39,7 +39,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-json", type=Path, required=True)
     parser.add_argument("--sam-path", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--variant", choices=("base", "freeref_gpu", "sam_h"), required=True)
+    parser.add_argument(
+        "--variant",
+        choices=("base", "freeref_gpu", "sam_h", "freeref_sam_h"),
+        required=True,
+    )
     parser.add_argument("--descriptor-grid-size", type=int, default=24)
     parser.add_argument("--conv-mode", default="vicuna_v1")
     parser.add_argument("--max-new-tokens", type=int, default=3069)
@@ -89,11 +93,15 @@ def main() -> int:
     )
     model.eval()
     predictor = None
-    if args.variant == "sam_h":
+    if args.variant in {"sam_h", "freeref_sam_h"}:
         sam = sam_model_registry["vit_h"](checkpoint=str(args.sam_path.resolve()))
         predictor = SamPredictor(sam.to(dtype=torch.float32, device="cuda").eval())
     config = TrainingFreeRefineConfig()
-    refiner = GpuTrainingFreeUncertaintyRefiner(config) if args.variant == "freeref_gpu" else None
+    refiner = (
+        GpuTrainingFreeUncertaintyRefiner(config)
+        if args.variant in {"freeref_gpu", "freeref_sam_h"}
+        else None
+    )
     dataset = ReferringSegDataset(args.eval_json, data_root=args.root, limit=0, offset=0)
     warmup_indices, measured_indices = select_indices(
         len(dataset), args.warmup, args.samples, args.seed
@@ -157,13 +165,20 @@ def main() -> int:
             assert predictor is not None
 
             def apply_sam():
-                coarse_mask = (coarse >= config.threshold).cpu().numpy()
-                if not coarse_mask.any():
-                    return np.zeros_like(coarse_mask)
+                input_mask = coarse >= config.threshold
+                if args.variant == "freeref_sam_h":
+                    assert refiner is not None
+                    input_mask = refiner.refine_hard_mask(
+                        image_array,
+                        input_mask,
+                    )["refined_mask"]
+                input_mask = input_mask.detach().cpu().numpy()
+                if not input_mask.any():
+                    return np.zeros_like(input_mask)
                 predictor.set_image(image_array)
-                logits = compute_sam_logits(coarse_grid, ResizeLongestSide)
+                logits = compute_sam_logits(input_mask, ResizeLongestSide)
                 torch.manual_seed(args.seed + index)
-                point_coords, point_labels = sample_mask_points(coarse_mask)
+                point_coords, point_labels = sample_mask_points(input_mask)
                 sam_mask, _, low_res_logits = predictor.predict(
                     point_coords=point_coords,
                     point_labels=point_labels,

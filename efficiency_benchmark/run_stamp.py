@@ -27,14 +27,19 @@ from training_free_refine.eval_stamp_sam_h import load_sam, sam_refine, stable_s
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Unified RTX 4090 STAMP end-to-end benchmark.")
+    parser = argparse.ArgumentParser(description="Unified single-GPU STAMP end-to-end benchmark.")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--stamp-code-dir", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--eval-json", type=Path, required=True)
     parser.add_argument("--sam-path", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--variant", choices=("base", "freeref_gpu", "sam_h"), required=True)
+    parser.add_argument(
+        "--variant",
+        choices=("base", "freeref_gpu", "sam_h", "freeref_sam_h"),
+        required=True,
+    )
+    parser.add_argument("--method-label", default="STAMP-7B")
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--samples", type=int, default=500)
     parser.add_argument("--seed", type=int, default=0)
@@ -101,9 +106,13 @@ def main() -> int:
     )
     question_templates = load_official_question_templates(code_dir)
     config = TrainingFreeRefineConfig()
-    refiner = GpuTrainingFreeUncertaintyRefiner(config) if args.variant == "freeref_gpu" else None
+    refiner = (
+        GpuTrainingFreeUncertaintyRefiner(config)
+        if args.variant in {"freeref_gpu", "freeref_sam_h"}
+        else None
+    )
     predictor = compute_logits = sample_points = official_utils = None
-    if args.variant == "sam_h":
+    if args.variant in {"sam_h", "freeref_sam_h"}:
         predictor, compute_logits, sample_points, official_utils = load_sam(
             code_dir, args.sam_path.resolve()
         )
@@ -137,13 +146,17 @@ def main() -> int:
             assert predictor is not None and compute_logits is not None and sample_points is not None
 
             def apply_sam():
-                coarse_mask = (coarse >= config.threshold).cpu().numpy()
+                input_mask = coarse >= config.threshold
+                if args.variant == "freeref_sam_h":
+                    assert refiner is not None
+                    input_mask = refiner.refine_probability(image_array, coarse)["refined_mask"]
+                input_mask = input_mask.detach().cpu().numpy()
                 predictor.set_image(image_array)
                 return sam_refine(
                     predictor,
                     compute_logits,
                     sample_points,
-                    coarse_mask,
+                    input_mask,
                     cascade_steps=2,
                     seed=stable_sample_seed(args.seed, str(index)),
                 )
@@ -165,7 +178,7 @@ def main() -> int:
     write_report(
         args.output_dir,
         {
-            "method": "STAMP-7B",
+            "method": args.method_label,
             "variant": args.variant,
             "device": gpu_name,
             "protocol": (

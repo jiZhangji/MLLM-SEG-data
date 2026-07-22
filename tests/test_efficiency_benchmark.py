@@ -5,6 +5,10 @@ from pathlib import Path
 
 from efficiency_benchmark.common import select_indices, write_report
 from efficiency_benchmark.summarize import ROWS, main as summarize_main
+from efficiency_benchmark.summarize_extended import (
+    ROWS as EXTENDED_ROWS,
+    main as summarize_extended_main,
+)
 
 
 def test_select_indices_is_paired_and_reproducible() -> None:
@@ -64,3 +68,36 @@ def test_summarize_requires_and_renders_all_rows(tmp_path: Path, monkeypatch) ->
     assert "STAMP-7B | +FreeRef-GPU" in text
     assert "Text4Seg-p24 | Base" in text
     assert "LISA-7B | Original" in text
+
+
+def test_extended_summarizer_renders_combined_variants(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "extended"
+    for directory, method, variant, *_ in EXTENDED_ROWS:
+        output = root / directory
+        output.mkdir(parents=True)
+        (output / "summary.json").write_text(
+            json.dumps(
+                {
+                    "method": method,
+                    "variant": variant,
+                    "device": "NVIDIA H100 80GB HBM3",
+                    "samples": 50,
+                    "warmup": 5,
+                    "e2e_mean_seconds": 1.0,
+                    "e2e_median_seconds": 0.9,
+                    "e2e_p95_seconds": 1.2,
+                    "fps": 1.0,
+                    "peak_gpu_gib": 10.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+    output = tmp_path / "extended.md"
+    monkeypatch.setattr(
+        "sys.argv",
+        ["summarize_extended", "--input-root", str(root), "--output", str(output)],
+    )
+    assert summarize_extended_main() == 0
+    text = output.read_text(encoding="utf-8")
+    assert "STAMP-2B | +FreeRef-GPU -> SAM-H" in text
+    assert "Text4Seg-p24 | +FreeRef-GPU -> SAM-H" in text

@@ -48,7 +48,15 @@ class ProcessGpuMemoryMonitor:
             import pynvml
 
             pynvml.nvmlInit()
-            handle = pynvml.nvmlDeviceGetHandleByIndex(self.device_index)
+            visible = [
+                value.strip()
+                for value in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
+                if value.strip()
+            ]
+            nvml_index = self.device_index
+            if self.device_index < len(visible) and visible[self.device_index].isdigit():
+                nvml_index = int(visible[self.device_index])
+            handle = pynvml.nvmlDeviceGetHandleByIndex(nvml_index)
             pid = os.getpid()
 
             def poll() -> None:

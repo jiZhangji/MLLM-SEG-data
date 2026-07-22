@@ -87,6 +87,27 @@ class TrainingFreeRefineTests(unittest.TestCase):
         self.assertLess(float((refined[confident] - coarse[confident]).abs().max()), 0.03)
         self.assertGreater(int(output["diagnostics"]["segments"]), 1)
 
+    def test_global_replacement_ablation_returns_graph_probability(self):
+        image = np.zeros((48, 64, 3), dtype=np.uint8)
+        image[:, :32] = (20, 80, 210)
+        image[:, 32:] = (220, 80, 30)
+        probability = np.full((48, 64), 0.2, dtype=np.float32)
+        probability[:, :36] = 0.8
+        refiner = TrainingFreeUncertaintyRefiner(
+            TrainingFreeRefineConfig(
+                n_segments=48,
+                selective_fusion=False,
+                uncertainty_aware_anchoring=False,
+                appearance_weighted_graph=False,
+            )
+        )
+        output = refiner.refine_probability(image, probability)
+        np.testing.assert_allclose(
+            output["refined_probability"].numpy(),
+            output["graph_probability"].numpy(),
+            atol=1e-6,
+        )
+
     def test_text4seg_saved_mask_evaluator(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
