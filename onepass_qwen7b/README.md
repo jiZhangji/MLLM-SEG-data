@@ -82,7 +82,24 @@ and starts full DDP fine-tuning only after every check passes.
 
 Training uses weighted BCE plus Dice and supports DDP, gradient accumulation,
 gradient checkpointing, atomic step/epoch checkpoints, and mid-epoch resume.
-Inference uses exactly the same strict-query input and never calls `generate()`
+Inference uses the prompt mode recorded by training and never calls `generate()`
 or a second model forward.
 
 Start with a 16-sample overfit test before any full-data run.
+
+## Semantic-path calibration
+
+Older SEG-grounding checkpoints learned a fusion coefficient close to zero, so
+their final prediction bypassed the explicit SEG branch. The evaluator now
+supports two backward-compatible diagnostics:
+
+- `--prompt-mode semantic_anchor` inserts the same deterministic assistant-side
+  `The referred object is <|seg|>.` context used by STAMP's classification pass,
+  while retaining one model call and zero autoregressive generation calls.
+- `--seg-fusion-sweep ...` evaluates `raw_logits + alpha * seg_logits` for many
+  fixed coefficients from one forward pass.
+
+Use `run_onepass7b_semantic_search.sh --checkpoint CHECKPOINT` to search both
+prompt modes and several coefficients on a validation subset. For new training,
+`--seg-fusion-alpha 0.25 --prompt-mode semantic_anchor` keeps the semantic path
+active instead of learning its coefficient from zero.

@@ -39,6 +39,7 @@ class SegGroundingHead(nn.Module):
         projection_size: int = 256,
         temperature: float = 0.1,
         use_fusion: bool = True,
+        fixed_fusion_alpha: float | None = None,
     ) -> None:
         super().__init__()
         if projection_size <= 0:
@@ -50,6 +51,11 @@ class SegGroundingHead(nn.Module):
         self.logit_scale = nn.Parameter(torch.tensor(math.log(1.0 / temperature)))
         self.fusion_weight = nn.Parameter(torch.zeros(()), requires_grad=bool(use_fusion))
         self.use_fusion = bool(use_fusion)
+        self.fixed_fusion_alpha = (
+            None if fixed_fusion_alpha is None else float(fixed_fusion_alpha)
+        )
+        if self.fixed_fusion_alpha is not None:
+            self.fusion_weight.requires_grad_(False)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -76,6 +82,8 @@ class SegGroundingHead(nn.Module):
     def fusion_alpha(self) -> torch.Tensor:
         if not self.use_fusion:
             return self.fusion_weight.detach() * 0.0
+        if self.fixed_fusion_alpha is not None:
+            return self.fusion_weight.new_tensor(self.fixed_fusion_alpha)
         return torch.tanh(self.fusion_weight)
 
 
@@ -150,6 +158,7 @@ class OnePassQwen7B(nn.Module):
         seg_grounding_size: int = 256,
         seg_grounding_temperature: float = 0.1,
         use_seg_fusion: bool = True,
+        seg_fusion_alpha: float | None = None,
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -165,6 +174,7 @@ class OnePassQwen7B(nn.Module):
                 projection_size=seg_grounding_size,
                 temperature=seg_grounding_temperature,
                 use_fusion=use_seg_fusion,
+                fixed_fusion_alpha=seg_fusion_alpha,
             )
             if use_seg_grounding
             else None
@@ -226,6 +236,7 @@ class OnePassQwen7B(nn.Module):
         raw_mask_logits: list[torch.Tensor],
         mask_hidden: list[torch.Tensor],
         seg_hidden: torch.Tensor,
+        fusion_alpha: float | torch.Tensor | None = None,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         """Recompute only the explicit SEG-grounding branch for diagnostics."""
         if self.seg_grounding_head is None:
@@ -233,7 +244,11 @@ class OnePassQwen7B(nn.Module):
         if len(raw_mask_logits) != len(mask_hidden):
             raise ValueError("Raw-logit and MASK-hidden group counts do not match.")
         seg_logits = self.seg_grounding_head(seg_hidden, mask_hidden)
-        alpha = self.seg_grounding_head.fusion_alpha()
+        alpha = (
+            self.seg_grounding_head.fusion_alpha()
+            if fusion_alpha is None
+            else raw_mask_logits[0].new_tensor(fusion_alpha)
+        )
         mask_logits = [raw + alpha * seg for raw, seg in zip(raw_mask_logits, seg_logits)]
         return mask_logits, seg_logits
 

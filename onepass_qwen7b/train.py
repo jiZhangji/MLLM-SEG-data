@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, DistributedSampler, Sampler
 from tqdm import tqdm
 
 from .checkpoint import load_checkpoint, read_checkpoint_config, save_checkpoint
-from .data import OnePass7BDataset, collate_samples, grid_targets, prepare_batch
+from .data import PROMPT_MODES, OnePass7BDataset, collate_samples, grid_targets, prepare_batch
 from .model import segmentation_loss
 from .runtime import configure_cudnn, load_base_onepass_model
 from .stamp_adapter import load_stamp_adapter_initialization, read_stamp_adapter_config
@@ -76,6 +76,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seg-grounding-temperature", type=float, default=0.1)
     parser.add_argument("--seg-grounding-loss-weight", type=float, default=0.1)
     parser.add_argument("--use-seg-fusion", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--seg-fusion-alpha",
+        type=float,
+        help="Use a fixed non-collapsible SEG residual weight instead of learning it from zero.",
+    )
+    parser.add_argument("--prompt-mode", choices=PROMPT_MODES, default="strict_query")
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
@@ -164,13 +170,14 @@ def checkpoint_config(args: argparse.Namespace) -> dict[str, Any]:
         "seg_grounding_temperature": float(args.seg_grounding_temperature),
         "seg_grounding_loss_weight": float(args.seg_grounding_loss_weight),
         "use_seg_fusion": bool(args.use_seg_fusion),
+        "seg_fusion_alpha": args.seg_fusion_alpha,
         "initialization": initialization,
         "parent_onepass_checkpoint": (
             str(args.init_onepass_checkpoint.resolve()) if args.init_onepass_checkpoint else None
         ),
         "stamp_adapter": str(args.stamp_adapter.resolve()) if args.stamp_adapter else None,
         "stamp_init_classifier": bool(args.stamp_adapter and args.stamp_init_classifier),
-        "prompt_mode": "strict_query",
+        "prompt_mode": args.prompt_mode,
     }
 
 
@@ -196,6 +203,8 @@ def main() -> int:
             raise ValueError("SEG grounding requires a positive --seg-grounding-loss-weight.")
         if args.seg_grounding_size <= 0 or args.seg_grounding_temperature <= 0:
             raise ValueError("SEG grounding size and temperature must be positive.")
+    elif args.seg_fusion_alpha is not None:
+        raise ValueError("--seg-fusion-alpha requires --use-seg-grounding.")
     if not args.train_classifier:
         raise ValueError("The OnePass mask classifier must remain trainable.")
     parent_config = None
@@ -273,6 +282,7 @@ def main() -> int:
         seg_grounding_size=args.seg_grounding_size,
         seg_grounding_temperature=args.seg_grounding_temperature,
         use_seg_fusion=args.use_seg_fusion,
+        seg_fusion_alpha=args.seg_fusion_alpha,
         allow_existing_segmentation_tokens=args.allow_existing_segmentation_tokens,
         gradient_checkpointing=args.gradient_checkpointing,
     )
@@ -408,7 +418,9 @@ def main() -> int:
             if distributed and not should_update:
                 sync_context = model.no_sync()
             with sync_context:
-                prepared = prepare_batch(samples, processor, device)
+                prepared = prepare_batch(
+                    samples, processor, device, prompt_mode=args.prompt_mode
+                )
                 targets = grid_targets(samples, prepared["grid_shapes"], device)
                 with torch.autocast(
                     device_type=device.type,

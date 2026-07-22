@@ -16,6 +16,9 @@ from torch.utils.data import Dataset
 
 SEG_TOKEN = "<|seg|>"
 MASK_TOKEN = "<|mask|>"
+PROMPT_MODE_STRICT_QUERY = "strict_query"
+PROMPT_MODE_SEMANTIC_ANCHOR = "semantic_anchor"
+PROMPT_MODES = (PROMPT_MODE_STRICT_QUERY, PROMPT_MODE_SEMANTIC_ANCHOR)
 
 
 def _content_text(message: dict[str, Any]) -> str:
@@ -190,25 +193,45 @@ def collate_samples(samples: list[OnePass7BSample]) -> list[OnePass7BSample]:
     return samples
 
 
-def _strict_chat_text(processor: Any, sample: OnePass7BSample) -> str:
-    messages = [
-        {
-            "role": "user",
-            "content": [{"image": sample.image}, {"text": sample.record.instruction}],
-        }
-    ]
-    prefix = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    return f"{prefix}{SEG_TOKEN}"
+def _chat_text(processor: Any, sample: OnePass7BSample, prompt_mode: str) -> str:
+    user_message = {
+        "role": "user",
+        "content": [{"image": sample.image}, {"text": sample.record.instruction}],
+    }
+    if prompt_mode == PROMPT_MODE_STRICT_QUERY:
+        prefix = processor.apply_chat_template(
+            [user_message], tokenize=False, add_generation_prompt=True
+        )
+        return f"{prefix}{SEG_TOKEN}"
+    if prompt_mode == PROMPT_MODE_SEMANTIC_ANCHOR:
+        # Match STAMP's deterministic classification context without an
+        # autoregressive generation call.
+        return processor.apply_chat_template(
+            [
+                user_message,
+                {
+                    "role": "assistant",
+                    "content": [{"text": f"The referred object is {SEG_TOKEN}."}],
+                },
+            ],
+            tokenize=False,
+        )
+    raise ValueError(f"Unsupported OnePass prompt mode {prompt_mode!r}; expected {PROMPT_MODES}.")
 
 
-def prepare_batch(samples: list[OnePass7BSample], processor: Any, device: torch.device) -> dict[str, Any]:
+def prepare_batch(
+    samples: list[OnePass7BSample],
+    processor: Any,
+    device: torch.device,
+    prompt_mode: str = PROMPT_MODE_STRICT_QUERY,
+) -> dict[str, Any]:
     if not samples:
         raise ValueError("Cannot prepare an empty batch.")
     tokenizer = processor.tokenizer
     seg_token_id = tokenizer.convert_tokens_to_ids(SEG_TOKEN)
     mask_token_id = tokenizer.convert_tokens_to_ids(MASK_TOKEN)
     image_pad_id = tokenizer.convert_tokens_to_ids("<|image_pad|>")
-    texts = [_strict_chat_text(processor, sample) for sample in samples]
+    texts = [_chat_text(processor, sample, prompt_mode) for sample in samples]
     encoded = processor(
         text=texts,
         images=[sample.image for sample in samples],
@@ -275,4 +298,3 @@ def grid_targets(
         target = F.interpolate(mask, size=(height, width), mode="nearest").reshape(-1)
         targets.append(target)
     return targets
-

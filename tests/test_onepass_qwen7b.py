@@ -12,7 +12,12 @@ import torch.nn as nn
 from PIL import Image
 
 from onepass_qwen7b.checkpoint import load_checkpoint, save_checkpoint
-from onepass_qwen7b.data import OnePass7BDataset, grid_targets, prepare_batch
+from onepass_qwen7b.data import (
+    PROMPT_MODE_SEMANTIC_ANCHOR,
+    OnePass7BDataset,
+    grid_targets,
+    prepare_batch,
+)
 from onepass_qwen7b.model import OnePassQwen7B, SegMaskQueryBuilder, segmentation_loss
 from onepass_stamp.lora import inject_lora
 
@@ -128,6 +133,16 @@ class OnePassQwen7BTests(unittest.TestCase):
             self.assertTrue(processor.last_generation_prompt)
             self.assertEqual(len(processor.last_messages), 1)
 
+            prepare_batch(
+                [sample],
+                processor,
+                torch.device("cpu"),
+                prompt_mode=PROMPT_MODE_SEMANTIC_ANCHOR,
+            )
+            self.assertFalse(processor.last_generation_prompt)
+            self.assertEqual([message["role"] for message in processor.last_messages], ["user", "assistant"])
+            self.assertIn("The referred object is <|seg|>.", processor.last_messages[1]["content"][0]["text"])
+
     def test_forward_backward_and_mask_attention_marker(self):
         backbone = FakeBackbone()
         inject_lora(backbone.model, rank=2, alpha=4.0, dropout=0.0, target_names=("q_proj",))
@@ -175,6 +190,27 @@ class OnePassQwen7BTests(unittest.TestCase):
         self.assertIsNotNone(model.seg_grounding_head.mask_projection.weight.grad)
         self.assertIsNotNone(model.seg_grounding_head.fusion_weight.grad)
         self.assertIsNotNone(model.query_builder.seg_embedding.grad)
+
+    def test_fixed_seg_fusion_cannot_collapse_and_preserves_checkpoint_layout(self):
+        backbone = FakeBackbone()
+        model = OnePassQwen7B(
+            backbone,
+            seg_token_id=5,
+            mask_token_id=6,
+            merge_size=2,
+            use_seg_grounding=True,
+            seg_grounding_size=2,
+            seg_fusion_alpha=0.5,
+        )
+        self.assertAlmostEqual(model.seg_fusion_alpha(), 0.5)
+        self.assertFalse(model.seg_grounding_head.fusion_weight.requires_grad)
+        raw = [torch.tensor([1.0, -1.0])]
+        hidden = [torch.randn(2, 4)]
+        seg_hidden = torch.randn(1, 4)
+        fused, seg_logits = model.logits_for_seg_hidden(raw, hidden, seg_hidden)
+        self.assertTrue(torch.allclose(fused[0], raw[0] + 0.5 * seg_logits[0]))
+        overridden, _ = model.logits_for_seg_hidden(raw, hidden, seg_hidden, fusion_alpha=-0.25)
+        self.assertTrue(torch.allclose(overridden[0], raw[0] - 0.25 * seg_logits[0]))
 
     def test_seg_diagnostic_forward_controls(self):
         backbone = FakeBackbone()

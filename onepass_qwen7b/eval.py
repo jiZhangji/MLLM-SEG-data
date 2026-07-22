@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .checkpoint import load_checkpoint, read_checkpoint_config
-from .data import OnePass7BDataset, collate_samples, prepare_batch
+from .data import PROMPT_MODES, OnePass7BDataset, collate_samples, prepare_batch
 from .runtime import configure_cudnn, load_base_onepass_model
 
 
@@ -29,6 +29,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--prompt-mode",
+        choices=PROMPT_MODES,
+        help="Override the checkpoint prompt for a no-retraining prompt-alignment ablation.",
+    )
+    parser.add_argument(
+        "--seg-fusion-alpha",
+        type=float,
+        help="Override the checkpoint SEG residual weight for the reported prediction.",
+    )
+    parser.add_argument(
+        "--seg-fusion-sweep",
+        type=float,
+        nargs="+",
+        help="Evaluate multiple raw + alpha * SEG predictions in the same model pass.",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", choices=("bf16", "fp16", "fp32"))
     parser.add_argument("--attn-implementation")
@@ -80,6 +96,7 @@ def main() -> int:
     attn_implementation = args.attn_implementation or str(config.get("attn_implementation", "sdpa"))
     min_pixels = args.min_pixels or int(config.get("min_pixels", 802816))
     max_pixels = args.max_pixels or int(config.get("max_pixels", 1003520))
+    prompt_mode = args.prompt_mode or str(config.get("prompt_mode", "strict_query"))
     device = torch.device(args.device)
     configure_cudnn(args.disable_cudnn, device)
     dataset = OnePass7BDataset(args.eval_json, args.data_root, limit=args.limit, offset=args.offset)
@@ -114,6 +131,7 @@ def main() -> int:
         seg_grounding_size=int(config.get("seg_grounding_size", 256)),
         seg_grounding_temperature=float(config.get("seg_grounding_temperature", 0.1)),
         use_seg_fusion=bool(config.get("use_seg_fusion", True)),
+        seg_fusion_alpha=config.get("seg_fusion_alpha"),
         allow_existing_segmentation_tokens=args.allow_existing_segmentation_tokens,
         gradient_checkpointing=False,
     )
@@ -127,6 +145,11 @@ def main() -> int:
     raw_total_union = 0
     seg_total_intersection = 0
     seg_total_union = 0
+    sweep_values = list(dict.fromkeys(args.seg_fusion_sweep or []))
+    sweep_metrics = {
+        alpha: {"iou_sum": 0.0, "intersection": 0, "union": 0}
+        for alpha in sweep_values
+    }
     model_seconds = 0.0
     end_to_end_seconds = 0.0
     autocast_enabled = device.type == "cuda" and dtype != "fp32"
@@ -136,7 +159,7 @@ def main() -> int:
         for samples in tqdm(loader, desc="onepass7b eval", dynamic_ncols=True):
             synchronize(device)
             end_start = time.perf_counter()
-            prepared = prepare_batch(samples, processor, device)
+            prepared = prepare_batch(samples, processor, device, prompt_mode=prompt_mode)
             synchronize(device)
             model_start = time.perf_counter()
             with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=autocast_enabled):
@@ -149,13 +172,19 @@ def main() -> int:
             synchronize(device)
             model_seconds += time.perf_counter() - model_start
             seg_groups = outputs.seg_logits or [None] * len(outputs.mask_logits)
-            for sample, logits, raw_logits, seg_logits, grid_shape in zip(
+            for sample, checkpoint_logits, raw_logits, seg_logits, grid_shape in zip(
                 samples,
                 outputs.mask_logits,
                 outputs.raw_mask_logits,
                 seg_groups,
                 outputs.grid_shapes,
             ):
+                if args.seg_fusion_alpha is not None:
+                    if seg_logits is None:
+                        raise ValueError("--seg-fusion-alpha requires a SEG-grounding checkpoint.")
+                    logits = raw_logits + float(args.seg_fusion_alpha) * seg_logits
+                else:
+                    logits = checkpoint_logits
                 target = sample.mask.to(device=device, dtype=torch.bool)
                 iou, intersection, union = logits_metrics(logits, target, grid_shape, args.threshold)
                 raw_iou, raw_intersection, raw_union = logits_metrics(
@@ -189,6 +218,16 @@ def main() -> int:
                             "seg_union": seg_union,
                         }
                     )
+                    for alpha, aggregate in sweep_metrics.items():
+                        sweep_logits = raw_logits + float(alpha) * seg_logits
+                        sweep_iou, sweep_intersection, sweep_union = logits_metrics(
+                            sweep_logits, target, grid_shape, args.threshold
+                        )
+                        aggregate["iou_sum"] += sweep_iou
+                        aggregate["intersection"] += sweep_intersection
+                        aggregate["union"] += sweep_union
+                elif sweep_metrics:
+                    raise ValueError("--seg-fusion-sweep requires a SEG-grounding checkpoint.")
                 rows.append(row)
             synchronize(device)
             end_to_end_seconds += time.perf_counter() - end_start
@@ -219,7 +258,13 @@ def main() -> int:
         "use_seg_grounding": bool(config.get("use_seg_grounding", False)),
         "seg_grounding_loss_weight": float(config.get("seg_grounding_loss_weight", 0.0)),
         "seg_fusion_alpha": model.seg_fusion_alpha(),
-        "prompt_mode": "strict_query",
+        "seg_fusion_alpha_checkpoint": model.seg_fusion_alpha(),
+        "seg_fusion_alpha_used": (
+            float(args.seg_fusion_alpha)
+            if args.seg_fusion_alpha is not None
+            else model.seg_fusion_alpha()
+        ),
+        "prompt_mode": prompt_mode,
         "rows_csv": str(rows_path),
     }
     if bool(config.get("use_seg_grounding", False)):
@@ -231,6 +276,26 @@ def main() -> int:
                 "seg_cIoU": seg_total_intersection / max(seg_total_union, 1),
             }
         )
+    if sweep_metrics:
+        sweep_rows = [
+            {
+                "alpha": alpha,
+                "gIoU": values["iou_sum"] / max(len(rows), 1),
+                "cIoU": values["intersection"] / max(values["union"], 1),
+                "total_intersection": values["intersection"],
+                "total_union": values["union"],
+            }
+            for alpha, values in sweep_metrics.items()
+        ]
+        sweep_rows.sort(key=lambda row: row["alpha"])
+        sweep_path = args.output_dir / "seg_fusion_sweep.csv"
+        with sweep_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(sweep_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(sweep_rows)
+        summary["seg_fusion_sweep"] = sweep_rows
+        summary["seg_fusion_best_by_cIoU"] = max(sweep_rows, key=lambda row: row["cIoU"])
+        summary["seg_fusion_sweep_csv"] = str(sweep_path)
     (args.output_dir / "eval_summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=True), encoding="utf-8"
     )
