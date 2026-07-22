@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="${MLLM_SEG_ROOT:-/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/lh/or/MLLM-SEG}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GPU="${STAMP2B_REPAIR_GPU:-0}"
+SAMH_JOBS="${STAMP2B_REPAIR_SAMH_PARALLEL_JOBS:-2}"
+SAMH_FREE_MB="${STAMP2B_REPAIR_SAMH_MIN_FREE_MB:-24000}"
 STAMP_ENV_PATH="${STAMP_ENV_PATH:-/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/my_global_cache/conda/envs/STAMP}"
 SPLITS="refcoco_testA refcoco+_testB"
 
@@ -51,8 +53,8 @@ done
 
 CUDA_DEVICE="${GPU}" \
 SAMH_ONLY_JOBS="STAMP-2B:refcoco_testA STAMP-2B:refcoco+_testB" \
-SAMH_PARALLEL_JOBS=2 \
-SAMH_MIN_FREE_MB=24000 \
+SAMH_PARALLEL_JOBS="${SAMH_JOBS}" \
+SAMH_MIN_FREE_MB="${SAMH_FREE_MB}" \
   bash run_frozen_samh_full_eval.sh
 
 echo "STAMP-2B missing-sample repair completed."
