@@ -26,7 +26,7 @@ echo "Latest log:"
 latest="$(find "${OUTPUT_ROOT}/logs" -maxdepth 1 -type f -name '*.log' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)"
 if [[ -n "${latest}" ]]; then
   echo "${latest}"
-  tail -n 20 "${latest}"
+  tail -n 60 "${latest}"
 else
   echo "none"
 fi

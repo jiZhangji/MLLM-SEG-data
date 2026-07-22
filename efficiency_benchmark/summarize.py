@@ -35,10 +35,14 @@ def main() -> int:
     warmups = {int(summary.get("warmup", 20)) for *_, summary in values}
     if len(sample_counts) != 1 or len(warmups) != 1:
         raise ValueError("All table rows must use the same measured and warm-up sample counts.")
+    devices = {str(summary["device"]) for *_, summary in values}
+    if len(devices) != 1:
+        raise ValueError("All table rows must be measured on the same GPU model.")
     measured = sample_counts.pop()
     warmup = warmups.pop()
+    device = devices.pop()
     lines = [
-        "# Unified RTX 4090 End-to-End Efficiency",
+        f"# Unified {device} End-to-End Efficiency",
         "",
         f"Batch size 1; {warmup} warm-up samples; {measured} measured samples; model loading and result writes excluded.",
         "All GPU work is synchronized per sample. FreeRef-GPU uses cuCIM/CuPy, not the CPU implementation.",
@@ -48,7 +52,7 @@ def main() -> int:
     ]
     for method, variant, extra_train, extra_params, summary in values:
         lines.append(
-            f"| {method} | {variant} | {extra_train} | {extra_params} | RTX 4090 | "
+            f"| {method} | {variant} | {extra_train} | {extra_params} | {summary['device']} | "
             f"{summary['e2e_mean_seconds']:.4f} | {summary['e2e_median_seconds']:.4f} | "
             f"{summary['e2e_p95_seconds']:.4f} | {summary['fps']:.3f} | "
             f"{summary['peak_gpu_gib']:.2f} |"

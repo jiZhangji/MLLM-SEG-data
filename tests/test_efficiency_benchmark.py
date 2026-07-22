@@ -43,6 +43,7 @@ def test_summarize_requires_and_renders_all_rows(tmp_path: Path, monkeypatch) ->
                 {
                     "method": method,
                     "variant": variant,
+                    "device": "NVIDIA GeForce RTX 4090",
                     "samples": 500,
                     "warmup": 20,
                     "e2e_mean_seconds": 1.0,

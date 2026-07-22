@@ -9,6 +9,7 @@ WARMUP="${EFFICIENCY_WARMUP:-20}"
 SEED="${EFFICIENCY_SEED:-0}"
 MIN_FREE_MB="${EFFICIENCY_MIN_FREE_MB:-20000}"
 FORCE="${EFFICIENCY_FORCE:-0}"
+ALLOW_OTHER_GPU="${EFFICIENCY_ALLOW_OTHER_GPU:-0}"
 OUTPUT_ROOT="${EFFICIENCY_OUTPUT_ROOT:-${ROOT}/outputs/freeref_efficiency_4090}"
 STAMP_ENV_PATH="${STAMP_ENV_PATH:-/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/my_global_cache/conda/envs/STAMP}"
 TEXT4SEG_CONDA_ENV="${TEXT4SEG_CONDA_ENV:-text4seg-tf}"
@@ -34,7 +35,8 @@ export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
 mkdir -p "${OUTPUT_ROOT}/logs"
 
 if command -v flock >/dev/null 2>&1; then
-  exec 9>"${ROOT}/outputs/.freeref_efficiency_4090.lock"
+  LOCK_SLUG="$(basename "${OUTPUT_ROOT}" | tr -c 'A-Za-z0-9_.-' '_')"
+  exec 9>"${ROOT}/outputs/.${LOCK_SLUG}.lock"
   if ! flock -n 9; then
     echo "Another unified 4090 efficiency benchmark is running." >&2
     exit 0
@@ -42,8 +44,9 @@ if command -v flock >/dev/null 2>&1; then
 fi
 
 GPU_NAME="$(nvidia-smi -i "${CUDA_DEVICE}" --query-gpu=name --format=csv,noheader | head -n1)"
-if [[ "${GPU_NAME}" != *4090* ]]; then
+if [[ "${GPU_NAME}" != *4090* && "${ALLOW_OTHER_GPU}" != "1" ]]; then
   echo "ERROR: GPU ${CUDA_DEVICE} is ${GPU_NAME}; the paper protocol requires RTX 4090." >&2
+  echo "Set EFFICIENCY_ALLOW_OTHER_GPU=1 only for a separately labeled device table." >&2
   exit 1
 fi
 FREE_MB="$(nvidia-smi -i "${CUDA_DEVICE}" --query-gpu=memory.free --format=csv,noheader,nounits | tr -dc '0-9')"
@@ -76,18 +79,29 @@ run_logged() {
   fi
   echo "RUN ${name}; log=${log_path}"
   mkdir -p "${output_dir}"
-  "$@" >"${log_path}" 2>&1
-  echo "DONE ${name}"
+  if "$@" >"${log_path}" 2>&1; then
+    echo "DONE ${name}"
+  else
+    code="$?"
+    echo "ERROR ${name} exited with ${code}; log=${log_path}" >&2
+    tail -n 80 "${log_path}" >&2 || true
+    return "${code}"
+  fi
 }
 
 cd "${SCRIPT_DIR}"
+DEVICE_ARGS=()
+if [[ "${ALLOW_OTHER_GPU}" == "1" ]]; then
+  DEVICE_ARGS+=(--allow-other-gpu)
+fi
 for variant in base freeref_gpu sam_h; do
   run_logged "stamp7b_${variant}" \
     "${STAMP_ENV_PATH}/bin/python" -m efficiency_benchmark.run_stamp \
       --root "${ROOT}" --stamp-code-dir "${STAMP_CODE_DIR}" --model "${STAMP_MODEL}" \
       --eval-json "${EVAL_JSON}" --sam-path "${SAM_PATH}" \
       --output-dir "${OUTPUT_ROOT}/stamp7b_${variant}" --variant "${variant}" \
-      --warmup "${WARMUP}" --samples "${SAMPLES}" --seed "${SEED}"
+      --warmup "${WARMUP}" --samples "${SAMPLES}" --seed "${SEED}" \
+      "${DEVICE_ARGS[@]}"
 done
 
 for variant in base freeref_gpu; do
@@ -98,7 +112,8 @@ for variant in base freeref_gpu; do
       --model-path "${TEXT4SEG_MODEL}" --vision-tower "${VISION_TOWER_336}" \
       --eval-json "${EVAL_JSON}" --sam-path "${SAM_PATH}" \
       --output-dir "${OUTPUT_ROOT}/text4seg_${variant}" --variant "${variant}" \
-      --warmup "${WARMUP}" --samples "${SAMPLES}" --seed "${SEED}"
+      --warmup "${WARMUP}" --samples "${SAMPLES}" --seed "${SEED}" \
+      "${DEVICE_ARGS[@]}"
 done
 
 run_logged "lisa_original" \
@@ -107,8 +122,9 @@ run_logged "lisa_original" \
     --lisa-code-dir "${LISA_CODE_DIR}" --model-path "${LISA_MODEL}" \
     --vision-tower "${LISA_VISION_TOWER}" --sam-path "${SAM_PATH}" \
     --dataset-dir "${LISA_DATASET_DIR}" --output-dir "${OUTPUT_ROOT}/lisa_original" \
-    --warmup "${WARMUP}" --samples "${SAMPLES}" --seed "${SEED}"
+    --warmup "${WARMUP}" --samples "${SAMPLES}" --seed "${SEED}" \
+    "${DEVICE_ARGS[@]}"
 
 python -m efficiency_benchmark.summarize \
   --input-root "${OUTPUT_ROOT}" --output "${OUTPUT_ROOT}/efficiency_table.md"
-echo "Unified RTX 4090 benchmark complete: ${OUTPUT_ROOT}/efficiency_table.md"
+echo "Unified ${GPU_NAME} benchmark complete: ${OUTPUT_ROOT}/efficiency_table.md"
