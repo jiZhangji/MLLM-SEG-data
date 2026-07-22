@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import random
 import sys
 from functools import partial
 from pathlib import Path
@@ -13,6 +12,7 @@ from efficiency_benchmark.common import (
     ProcessGpuMemoryMonitor,
     assert_rtx_4090,
     cuda_elapsed,
+    select_indices,
     write_report,
 )
 
@@ -117,13 +117,41 @@ def main() -> int:
         use_mm_start_end=True,
         local_rank=0,
     )
-    indices = list(range(len(dataset)))
-    random.Random(args.seed).shuffle(indices)
+    if getattr(dataset, "data_type", None) != "refer_seg":
+        raise RuntimeError("The efficiency table requires an official REFER segmentation split.")
+    refer_data = dataset.refer_seg_ds
+    expression_locations: list[tuple[int, int]] = []
+    for image_index, image_info in enumerate(refer_data["images"]):
+        expression_count = sum(
+            len(ref["sentences"]) for ref in refer_data["img2refs"][image_info["id"]]
+        )
+        expression_locations.extend(
+            (image_index, expression_index) for expression_index in range(expression_count)
+        )
+    warmup_indices, measured_indices = select_indices(
+        len(expression_locations), args.warmup, args.samples, args.seed
+    )
 
-    def run(image_index: int) -> tuple[list[dict[str, float | int]], int]:
+    def single_expression_item(item, expression_index: int):
+        values = list(item)
+        conversations = values[3]
+        masks = values[4]
+        if not 0 <= expression_index < len(conversations):
+            raise IndexError(
+                f"Expression {expression_index} is outside an item with {len(conversations)} prompts."
+            )
+        values[3] = [conversations[expression_index]]
+        values[4] = masks[expression_index : expression_index + 1]
+        for field_index in (7, 8):
+            if isinstance(values[field_index], list):
+                values[field_index] = [values[field_index][expression_index]]
+        return tuple(values)
+
+    def run(location_index: int) -> dict[str, float | int]:
+        image_index, expression_index = expression_locations[location_index]
         # Image decoding is excluded; collation, tensor preparation, model forward,
         # native learned SAM decoder, and mask thresholding are included.
-        item = dataset[image_index]
+        item = single_expression_item(dataset[image_index], expression_index)
 
         def infer():
             batch = collate([item])
@@ -140,39 +168,24 @@ def main() -> int:
             return batch, masks
 
         (batch, masks), elapsed = cuda_elapsed(infer)
-        expression_count = len(batch["conversation_list"])
-        if len(masks) != 1 or len(masks[0]) != expression_count:
-            raise RuntimeError("LISA expression count does not match its native mask output.")
-        per_expression = elapsed / expression_count
-        return [
-            {
-                "image_index": image_index,
-                "expression_index": expression_index,
-                "native_pipeline_seconds": per_expression,
-                "total_seconds": per_expression,
-            }
-            for expression_index in range(expression_count)
-        ], expression_count
+        if len(batch["conversation_list"]) != 1 or len(masks) != 1 or len(masks[0]) != 1:
+            raise RuntimeError("LISA single-expression benchmark produced a grouped mask output.")
+        return {
+            "location_index": location_index,
+            "image_index": image_index,
+            "expression_index": expression_index,
+            "native_pipeline_seconds": elapsed,
+            "total_seconds": elapsed,
+        }
 
-    cursor = 0
-    warmed = 0
-    with tqdm(total=args.warmup, desc="LISA warmup expressions") as progress:
-        while warmed < args.warmup:
-            _, count = run(indices[cursor])
-            cursor += 1
-            step = min(count, args.warmup - warmed)
-            warmed += step
-            progress.update(step)
+    for location_index in tqdm(warmup_indices, desc="LISA warmup expressions"):
+        run(location_index)
     monitor = ProcessGpuMemoryMonitor()
     monitor.start()
-    rows: list[dict[str, float | int]] = []
-    with tqdm(total=args.samples, desc="LISA measured expressions") as progress:
-        while len(rows) < args.samples:
-            image_rows, _ = run(indices[cursor])
-            cursor += 1
-            needed = args.samples - len(rows)
-            rows.extend(image_rows[:needed])
-            progress.update(min(len(image_rows), needed))
+    rows = [
+        run(location_index)
+        for location_index in tqdm(measured_indices, desc="LISA measured expressions")
+    ]
     peak_gpu_gib, memory_backend = monitor.finish()
     write_report(
         args.output_dir,
@@ -181,7 +194,7 @@ def main() -> int:
             "variant": "original",
             "device": gpu_name,
             "protocol": (
-                "e2e_official_refer_grouped_expressions_batch1_image_"
+                "e2e_official_refer_single_expression_batch1_"
                 f"warmup{args.warmup}_seed{args.seed}"
             ),
             "warmup": args.warmup,
@@ -190,7 +203,7 @@ def main() -> int:
             "vision_tower": str(vision_tower),
             "sam_path": str(sam_path),
             "val_dataset": args.val_dataset,
-            "note": "LISA natively evaluates all referring expressions for one image together; image-call latency is evenly amortized across those expressions.",
+            "note": "Each timed call contains exactly one referring expression and one native LISA mask decode.",
         },
         rows,
         peak_gpu_gib,

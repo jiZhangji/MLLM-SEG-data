@@ -64,8 +64,9 @@ done
 
 complete() {
   local summary="$1"
+  local name="$2"
   [[ "${FORCE}" != "1" && -f "${summary}" ]] && \
-    python -c 'import json,sys; raise SystemExit(0 if int(json.load(open(sys.argv[1])).get("samples",0)) == int(sys.argv[2]) else 1)' "${summary}" "${SAMPLES}"
+    python -c 'import json,sys; d=json.load(open(sys.argv[1])); valid=int(d.get("samples",0)) == int(sys.argv[2]); valid = valid and (sys.argv[3] != "lisa_original" or "single_expression" in str(d.get("protocol",""))); raise SystemExit(0 if valid else 1)' "${summary}" "${SAMPLES}" "${name}"
 }
 
 run_logged() {
@@ -73,7 +74,7 @@ run_logged() {
   shift
   local output_dir="${OUTPUT_ROOT}/${name}"
   local log_path="${OUTPUT_ROOT}/logs/${name}.log"
-  if complete "${output_dir}/summary.json"; then
+  if complete "${output_dir}/summary.json" "${name}"; then
     echo "SKIP complete ${name}"
     return
   fi

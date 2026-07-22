@@ -12,6 +12,10 @@ for name in stamp7b_base stamp7b_freeref_gpu stamp7b_sam_h text4seg_base text4se
     count="$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1])).get("samples",0)))' "${summary}")"
     status="partial"
     [[ "${count}" == "${SAMPLES}" ]] && status="complete"
+    if [[ "${name}" == "lisa_original" ]]; then
+      protocol="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("protocol",""))' "${summary}")"
+      [[ "${protocol}" != *single_expression* ]] && status="stale"
+    fi
     printf '%-25s %10s %12s\n' "${name}" "${count}/${SAMPLES}" "${status}"
   else
     printf '%-25s %10s %12s\n' "${name}" "0/${SAMPLES}" "pending"
