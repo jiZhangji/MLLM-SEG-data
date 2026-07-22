@@ -17,7 +17,6 @@ install_gpu_freeref() {
   shift
   echo "Installing GPU FreeRef runtime in ${label}"
   "$@" -m pip install \
-    'numpy<2' \
     'cupy-cuda12x>=13.3,<14' \
     'cucim-cu12>=24.12,<26' \
     'nvidia-ml-py>=12'
