@@ -102,6 +102,7 @@ def main() -> int:
                 seconds = sam_mean_seconds(sam_timing_summary)
             else:
                 seconds = float(timing_methods[key]["mean_seconds"])
+            throughput = 1.0 / seconds if seconds > 1e-8 else None
             all_rows.append(
                 {
                     "model": model_label,
@@ -115,6 +116,7 @@ def main() -> int:
                     "bIoU": 100.0 * float(metrics["bIoU"]),
                     "delta_bIoU": 100.0 * float(metrics["delta_bIoU"]),
                     "seconds_per_sample": seconds,
+                    "throughput_samples_per_second": throughput,
                     "backend": backend,
                 }
             )
@@ -131,14 +133,17 @@ def main() -> int:
         "Accuracy uses paired saved outputs on RefCOCO testA. Runtime is measured in a separate "
         "serial stage with image/model-output loading excluded.",
         "",
-        "| Model | Refiner | Training | External model | mIoU | Delta mIoU | cIoU | Delta cIoU | bIoU | Delta bIoU | Sec/sample | Backend |",
-        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| Model | Refiner | Training | External model | mIoU | Delta mIoU | cIoU | Delta cIoU | bIoU | Delta bIoU | Latency (s/sample) | Throughput (samples/s) | Backend |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for row in all_rows:
+        throughput = row["throughput_samples_per_second"]
+        throughput_text = "-" if throughput is None else f"{float(throughput):.2f}"
         lines.append(
             "| {model} | {refiner} | {training} | {external_model} | {mIoU:.2f} | "
             "{delta_mIoU:+.2f} | {cIoU:.2f} | {delta_cIoU:+.2f} | {bIoU:.2f} | "
-            "{delta_bIoU:+.2f} | {seconds_per_sample:.4f} | {backend} |".format(**row)
+            "{delta_bIoU:+.2f} | {seconds_per_sample:.4f} | {throughput} | "
+            "{backend} |".format(throughput=throughput_text, **row)
         )
     lines.extend(
         [

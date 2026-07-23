@@ -97,9 +97,15 @@ def save_accuracy_gain(rows: list[dict[str, object]], output_dir: Path, dpi: int
         axis.grid(axis="y", color="#dddddd", linewidth=0.6)
         axis.set_axisbelow(True)
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False)
-    fig.suptitle("Training-free post-processing accuracy gains", y=1.02, fontsize=12)
-    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.98),
+        ncol=3,
+        frameon=False,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.86))
     for suffix in ("png", "pdf"):
         fig.savefig(output_dir / f"postprocess_accuracy_gains.{suffix}", dpi=dpi, bbox_inches="tight")
     plt.close(fig)
