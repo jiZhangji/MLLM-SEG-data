@@ -56,6 +56,8 @@ def _validate_inputs(image: np.ndarray, probability: np.ndarray) -> tuple[np.nda
     if image_rgb.dtype != np.uint8:
         scale = 255.0 if float(np.nanmax(image_rgb)) <= 1.0 else 1.0
         image_rgb = np.clip(image_rgb * scale, 0, 255).astype(np.uint8)
+    # PyDenseCRF's Cython memoryview requires writable C-contiguous RGB storage.
+    image_rgb = np.array(image_rgb, dtype=np.uint8, order="C", copy=True)
     return image_rgb, np.clip(values, 0.0, 1.0)
 
 

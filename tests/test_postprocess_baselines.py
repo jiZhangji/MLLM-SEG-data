@@ -13,6 +13,7 @@ from PIL import Image
 from training_free_refine.eval_postprocess_baselines import main as evaluate_main
 from training_free_refine.postprocess_baselines import (
     PostprocessBaselineConfig,
+    _validate_inputs,
     guided_filter_probability,
     hard_mask_probability,
     slic_region_average_probability,
@@ -24,6 +25,17 @@ from training_free_refine.summarize_postprocess_baselines import (
 
 
 class PostprocessBaselineTests(unittest.TestCase):
+    def test_densecrf_image_buffer_is_writable_and_contiguous(self):
+        source = np.zeros((8, 10, 3), dtype=np.uint8)
+        readonly = np.frombuffer(source.tobytes(), dtype=np.uint8).reshape(source.shape)
+        self.assertFalse(readonly.flags.writeable)
+        image, probability = _validate_inputs(
+            readonly, np.full(source.shape[:2], 0.5, dtype=np.float32)
+        )
+        self.assertTrue(image.flags.writeable)
+        self.assertTrue(image.flags.c_contiguous)
+        self.assertEqual(probability.shape, source.shape[:2])
+
     def test_hard_mask_probability_uses_symmetric_confidence(self):
         mask = np.asarray([[False, True], [True, False]])
         np.testing.assert_allclose(
