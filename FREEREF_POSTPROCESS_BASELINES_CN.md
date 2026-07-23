@@ -59,6 +59,28 @@ grep --line-buffered -E '[0-9]+%|DONE|ERROR|Traceback'
 outputs/freeref_postprocess_baselines_n500/combined/postprocess_comparison.md
 ```
 
+## 4. 生成论文图
+
+```bash
+ROOT=/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/lh/or/MLLM-SEG
+cd "$ROOT/MLLM-SEG-data"
+
+conda run --no-capture-output -n text4seg-tf \
+python -m training_free_refine.plot_postprocess_baselines \
+  --input "$ROOT/outputs/freeref_postprocess_baselines_n500/combined/postprocess_comparison.csv" \
+  --output-dir "$ROOT/outputs/freeref_postprocess_baselines_n500/plots" \
+  --dpi 300
+```
+
+输出包括：
+
+```text
+postprocess_accuracy_gains.png
+postprocess_accuracy_gains.pdf
+postprocess_accuracy_latency.png
+postprocess_accuracy_latency.pdf
+```
+
 ## 协议说明
 
 - Text4Seg 硬掩码仅在 DenseCRF、Guided Filter 和 SLIC Averaging 中固定映射为

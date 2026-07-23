@@ -18,6 +18,7 @@ from training_free_refine.postprocess_baselines import (
     hard_mask_probability,
     slic_region_average_probability,
 )
+from training_free_refine.plot_postprocess_baselines import main as plot_main
 from training_free_refine.summarize_postprocess_baselines import (
     assert_paired_base,
     main as summarize_main,
@@ -232,6 +233,25 @@ class PostprocessBaselineTests(unittest.TestCase):
                 {row["refiner"] for row in summary["rows"]},
                 {"None", "DenseCRF", "Guided Filter", "SLIC Averaging", "SAM-H", "FreeRef"},
             )
+            plot_output = root / "plots"
+            plot_argv = [
+                "plot_postprocess_baselines",
+                "--input",
+                str(output / "postprocess_comparison.csv"),
+                "--output-dir",
+                str(plot_output),
+                "--dpi",
+                "72",
+            ]
+            with patch("sys.argv", plot_argv):
+                self.assertEqual(plot_main(), 0)
+            for name in (
+                "postprocess_accuracy_gains.png",
+                "postprocess_accuracy_gains.pdf",
+                "postprocess_accuracy_latency.png",
+                "postprocess_accuracy_latency.pdf",
+            ):
+                self.assertGreater((plot_output / name).stat().st_size, 0)
 
 
 if __name__ == "__main__":
