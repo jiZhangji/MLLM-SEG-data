@@ -11,6 +11,7 @@ GPU="${CUDA_DEVICE:-0}"
 MIN_FREE_MB="${SPECIAL_MIN_FREE_GPU_MB:-24000}"
 POLL_SECONDS="${SPECIAL_GPU_POLL_SECONDS:-10}"
 EVAL_LIMIT="${SPECIAL_EVAL_LIMIT:-0}"
+ONLY_DATASETS="${SPECIAL_ONLY_DATASETS:-grefcoco reasonseg refclef}"
 JSON_DIR="${ROOT}/code/STAMP/playground/data/json_eval_special"
 MASK_ROOT="${ROOT}/code/STAMP/playground/data/masks_eval_special"
 COMBINED_OUTPUT="${SPECIAL_COMBINED_OUTPUT:-${ROOT}/outputs/training_free_special_datasets_comparison}"
@@ -24,7 +25,7 @@ if [[ ! -d "${STAMP7B_MODEL}" ]]; then
   echo "ERROR: STAMP-7B model not found: ${STAMP7B_MODEL}" >&2
   exit 1
 fi
-if [[ -z "${REASONSEG_MODEL}" ]]; then
+if [[ " ${ONLY_DATASETS} " == *" reasonseg "* && -z "${REASONSEG_MODEL}" ]]; then
   if [[ -d "${ROOT}/models/STAMP-2B-reasonseg" ]]; then
     REASONSEG_MODEL="${ROOT}/models/STAMP-2B-reasonseg"
     REASONSEG_MODE="reasoning_finetuned"
@@ -32,10 +33,12 @@ if [[ -z "${REASONSEG_MODEL}" ]]; then
     REASONSEG_MODEL="${ROOT}/models/STAMP-2B-uni"
     REASONSEG_MODE="base_zero_shot"
   fi
-else
+elif [[ " ${ONLY_DATASETS} " == *" reasonseg "* ]]; then
   REASONSEG_MODE="user_checkpoint"
+else
+  REASONSEG_MODE="not_requested"
 fi
-if [[ ! -d "${REASONSEG_MODEL}" ]]; then
+if [[ " ${ONLY_DATASETS} " == *" reasonseg "* && ! -d "${REASONSEG_MODEL}" ]]; then
   echo "ERROR: ReasonSeg model not found: ${REASONSEG_MODEL}" >&2
   exit 1
 fi
@@ -133,34 +136,40 @@ evaluate_split() {
 cd "${REPO}"
 echo "ReasonSeg checkpoint mode: ${REASONSEG_MODE} (${REASONSEG_MODEL})"
 
-echo "[1/3] gRefCOCO val/testA/testB"
-if prepare_dataset grefcoco val testA testB; then
-  for split in val testA testB; do
-    evaluate_split grefcoco "${split}" "${STAMP7B_MODEL}" "stamp7b_grefcoco"
-  done
-else
-  printf "grefcoco\tall\tskipped_missing_data\tstamp7b_grefcoco\t\n" >> "${STATUS_FILE}"
-  echo "WARNING: gRefCOCO preparation failed; continuing serial evaluation." >&2
+if [[ " ${ONLY_DATASETS} " == *" grefcoco "* ]]; then
+  echo "[gRefCOCO] val/testA/testB"
+  if prepare_dataset grefcoco val testA testB; then
+    for split in val testA testB; do
+      evaluate_split grefcoco "${split}" "${STAMP7B_MODEL}" "stamp7b_grefcoco"
+    done
+  else
+    printf "grefcoco\tall\tskipped_missing_data\tstamp7b_grefcoco\t\n" >> "${STATUS_FILE}"
+    echo "WARNING: gRefCOCO preparation failed; continuing serial evaluation." >&2
+  fi
 fi
 
-echo "[2/3] ReasonSeg val/test"
-if prepare_dataset reasonseg val test; then
-  for split in val test; do
-    evaluate_split reasonseg "${split}" "${REASONSEG_MODEL}" "${REASONSEG_MODE}"
-  done
-else
-  printf "reasonseg\tall\tskipped_missing_data\t%s\t\n" "${REASONSEG_MODE}" >> "${STATUS_FILE}"
-  echo "WARNING: ReasonSeg preparation failed; continuing serial evaluation." >&2
+if [[ " ${ONLY_DATASETS} " == *" reasonseg "* ]]; then
+  echo "[ReasonSeg] val/test"
+  if prepare_dataset reasonseg val test; then
+    for split in val test; do
+      evaluate_split reasonseg "${split}" "${REASONSEG_MODEL}" "${REASONSEG_MODE}"
+    done
+  else
+    printf "reasonseg\tall\tskipped_missing_data\t%s\t\n" "${REASONSEG_MODE}" >> "${STATUS_FILE}"
+    echo "WARNING: ReasonSeg preparation failed; continuing serial evaluation." >&2
+  fi
 fi
 
-echo "[3/3] RefCLEF/ReferIt val/test"
-if prepare_dataset refclef val test; then
-  for split in val test; do
-    evaluate_split refclef "${split}" "${STAMP7B_MODEL}" "stamp7b_refclef"
-  done
-else
-  printf "refclef\tall\tskipped_missing_authorized_data\tstamp7b_refclef\t\n" >> "${STATUS_FILE}"
-  echo "WARNING: RefCLEF official annotations/images are incomplete; marked skipped." >&2
+if [[ " ${ONLY_DATASETS} " == *" refclef "* ]]; then
+  echo "[RefCLEF/ReferIt] val/test"
+  if prepare_dataset refclef val test; then
+    for split in val test; do
+      evaluate_split refclef "${split}" "${STAMP7B_MODEL}" "stamp7b_refclef"
+    done
+  else
+    printf "refclef\tall\tskipped_missing_authorized_data\tstamp7b_refclef\t\n" >> "${STATUS_FILE}"
+    echo "WARNING: RefCLEF official annotations/images are incomplete; marked skipped." >&2
+  fi
 fi
 
 if (( ${#SUMMARY_ARGS[@]} > 0 )); then

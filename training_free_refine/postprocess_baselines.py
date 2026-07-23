@@ -4,6 +4,9 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 from scipy.ndimage import uniform_filter
+from scipy import sparse
+from scipy.sparse.linalg import cg
+from skimage.color import rgb2lab
 from skimage.segmentation import slic
 
 
@@ -19,6 +22,13 @@ class PostprocessBaselineConfig:
     densecrf_bilateral_compat: float = 10.0
     guided_radius: int = 8
     guided_epsilon: float = 1e-3
+    fbs_sigma_spatial: float = 16.0
+    fbs_sigma_luma: float = 8.0
+    fbs_sigma_chroma: float = 8.0
+    fbs_lambda: float = 128.0
+    fbs_iterations: int = 25
+    fbs_max_tolerance: float = 1e-5
+    fbs_confidence_floor: float = 1e-3
     n_segments: int = 1024
     compactness: float = 10.0
     slic_sigma: float = 1.0
@@ -30,6 +40,16 @@ class PostprocessBaselineConfig:
             raise ValueError("densecrf_iterations must be positive.")
         if self.guided_radius < 1 or self.guided_epsilon <= 0:
             raise ValueError("guided_radius and guided_epsilon must be positive.")
+        if min(
+            self.fbs_sigma_spatial,
+            self.fbs_sigma_luma,
+            self.fbs_sigma_chroma,
+            self.fbs_lambda,
+            self.fbs_max_tolerance,
+        ) <= 0:
+            raise ValueError("Fast Bilateral Solver scales, lambda, and tolerance must be positive.")
+        if self.fbs_iterations <= 0 or not 0 < self.fbs_confidence_floor <= 1:
+            raise ValueError("Invalid Fast Bilateral Solver iteration/confidence configuration.")
         if self.n_segments <= 1 or self.compactness <= 0 or self.slic_sigma < 0:
             raise ValueError("Invalid SLIC configuration.")
 
@@ -119,6 +139,93 @@ def guided_filter_probability(
     mean_coefficient = uniform_filter(coefficient, size=size, mode="reflect")
     mean_intercept = uniform_filter(intercept, size=size, mode="reflect")
     return np.clip(mean_coefficient * guide + mean_intercept, 0.0, 1.0).astype(np.float32)
+
+
+def fast_bilateral_solver_probability(
+    image: np.ndarray,
+    probability: np.ndarray,
+    config: PostprocessBaselineConfig,
+) -> np.ndarray:
+    image_rgb, foreground = _validate_inputs(image, probability)
+    height, width = foreground.shape
+    lab = rgb2lab(image_rgb.astype(np.float32) / 255.0)
+    yy, xx = np.indices((height, width), dtype=np.float64)
+    coordinates = np.stack(
+        (
+            xx / config.fbs_sigma_spatial,
+            yy / config.fbs_sigma_spatial,
+            lab[..., 0] / config.fbs_sigma_luma,
+            lab[..., 1] / config.fbs_sigma_chroma,
+            lab[..., 2] / config.fbs_sigma_chroma,
+        ),
+        axis=-1,
+    )
+    coordinates = np.floor(coordinates).reshape(-1, 5).astype(np.int32)
+    vertices, inverse = np.unique(coordinates, axis=0, return_inverse=True)
+    pixel_count = inverse.size
+    vertex_count = vertices.shape[0]
+    splat = sparse.csr_matrix(
+        (np.ones(pixel_count), (inverse, np.arange(pixel_count))),
+        shape=(vertex_count, pixel_count),
+    )
+
+    lookup = {tuple(vertex): index for index, vertex in enumerate(vertices)}
+    blur_rows = list(range(vertex_count))
+    blur_cols = list(range(vertex_count))
+    for index, vertex in enumerate(vertices):
+        for dimension in range(vertices.shape[1]):
+            neighbor = vertex.copy()
+            neighbor[dimension] += 1
+            target = lookup.get(tuple(neighbor))
+            if target is not None:
+                blur_rows.extend((index, target))
+                blur_cols.extend((target, index))
+    blur = sparse.csr_matrix(
+        (np.ones(len(blur_rows)), (blur_rows, blur_cols)),
+        shape=(vertex_count, vertex_count),
+    )
+
+    mass = np.asarray(splat @ np.ones(pixel_count)).reshape(-1)
+    normalization = np.ones(vertex_count, dtype=np.float64)
+    for _ in range(10):
+        blurred = np.asarray(blur @ normalization).reshape(-1)
+        normalization = np.sqrt(
+            np.maximum(normalization * mass, 1e-12) / np.maximum(blurred, 1e-12)
+        )
+    normalized_mass = normalization * np.asarray(blur @ normalization).reshape(-1)
+    diagonal_normalization = sparse.diags(normalization)
+    smoothness = config.fbs_lambda * (
+        sparse.diags(normalized_mass)
+        - diagonal_normalization @ blur @ diagonal_normalization
+    )
+
+    source = foreground.reshape(-1).astype(np.float64)
+    confidence = np.maximum(
+        np.abs(2.0 * source - 1.0), config.fbs_confidence_floor
+    ).astype(np.float64)
+    data_diagonal = np.asarray(splat @ confidence).reshape(-1)
+    system = smoothness + sparse.diags(data_diagonal) + sparse.eye(vertex_count) * 1e-8
+    rhs = np.asarray(splat @ (confidence * source)).reshape(-1)
+    try:
+        solution, info = cg(
+            system,
+            rhs,
+            rtol=config.fbs_max_tolerance,
+            atol=0.0,
+            maxiter=config.fbs_iterations,
+        )
+    except TypeError:
+        solution, info = cg(
+            system,
+            rhs,
+            tol=config.fbs_max_tolerance,
+            atol=0.0,
+            maxiter=config.fbs_iterations,
+        )
+    if info < 0 or not np.isfinite(solution).all():
+        solution = sparse.linalg.spsolve(system, rhs)
+    result = np.asarray(splat.T @ solution).reshape(height, width)
+    return np.clip(result, 0.0, 1.0).astype(np.float32)
 
 
 def slic_region_average_probability(

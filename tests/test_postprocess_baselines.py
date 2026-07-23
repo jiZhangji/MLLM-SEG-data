@@ -14,6 +14,7 @@ from training_free_refine.eval_postprocess_baselines import main as evaluate_mai
 from training_free_refine.postprocess_baselines import (
     PostprocessBaselineConfig,
     _validate_inputs,
+    fast_bilateral_solver_probability,
     guided_filter_probability,
     hard_mask_probability,
     slic_region_average_probability,
@@ -56,6 +57,23 @@ class PostprocessBaselineTests(unittest.TestCase):
             PostprocessBaselineConfig(guided_radius=3),
         )
         np.testing.assert_allclose(output, probability, atol=1e-5)
+
+    def test_fast_bilateral_solver_preserves_constant_probability(self):
+        image = np.zeros((24, 32, 3), dtype=np.uint8)
+        image[:, :16] = (30, 80, 210)
+        image[:, 16:] = (220, 70, 40)
+        probability = np.full((24, 32), 0.7, dtype=np.float32)
+        output = fast_bilateral_solver_probability(
+            image,
+            probability,
+            PostprocessBaselineConfig(
+                fbs_sigma_spatial=8.0,
+                fbs_iterations=50,
+            ),
+        )
+        self.assertEqual(output.shape, probability.shape)
+        self.assertTrue(np.isfinite(output).all())
+        np.testing.assert_allclose(output, probability, atol=2e-3)
 
     def test_slic_average_is_constant_within_each_region(self):
         image = np.zeros((32, 32, 3), dtype=np.uint8)

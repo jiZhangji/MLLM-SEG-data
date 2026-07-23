@@ -31,10 +31,16 @@ def main() -> int:
                 "refined_cIoU_pct": 100.0 * float(value["refined_cIoU"]),
                 "delta_cIoU_points": 100.0 * float(value["cIoU_delta"]),
                 "delta_boundary_iou_points": 100.0 * float(value["boundary_iou_delta"]),
+                "coarse_boundary_iou_pct": 100.0 * float(value["coarse_boundary_iou"]),
+                "refined_boundary_iou_pct": 100.0 * float(value["refined_boundary_iou"]),
                 "seconds_per_sample": float(value["seconds_per_sample"]),
                 "n_segments": config.get("n_segments"),
                 "graph_lambda": config.get("graph_lambda"),
                 "confidence_power": config.get("confidence_power"),
+                "fusion_power": config.get("fusion_power"),
+                "foreground_seed": config.get("foreground_seed"),
+                "background_seed": config.get("background_seed"),
+                "seed_strength": config.get("seed_strength"),
                 "boundary_sigma": value.get("boundary_sigma"),
                 "uncertainty_aware_anchoring": config.get("uncertainty_aware_anchoring"),
                 "appearance_weighted_graph": config.get("appearance_weighted_graph"),
@@ -58,16 +64,17 @@ def main() -> int:
     lines = [
         "# FreeRef Paper Ablations and Sensitivity Studies",
         "",
-        "All values are percentage points on a fixed paired subset.",
+        "Ablations use complete RefCOCO testA; hyperparameter sweeps use complete RefCOCO val.",
         "",
-        "| Model | Study | Setting | N | Refined mIoU | Delta mIoU | Refined cIoU | Delta cIoU | Delta bIoU | Sec/sample |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Model | Study | Setting | N | Refined mIoU | Delta mIoU | Refined cIoU | Delta cIoU | Refined bIoU | Delta bIoU | Sec/sample |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
             "| {model} | {study} | {setting} | {samples} | {refined_mIoU_pct:.2f} | "
             "{delta_mIoU_points:+.2f} | {refined_cIoU_pct:.2f} | "
-            "{delta_cIoU_points:+.2f} | {delta_boundary_iou_points:+.2f} | "
+            "{delta_cIoU_points:+.2f} | {refined_boundary_iou_pct:.2f} | "
+            "{delta_boundary_iou_points:+.2f} | "
             "{seconds_per_sample:.4f} |".format(**row)
         )
     markdown = "\n".join(lines) + "\n"

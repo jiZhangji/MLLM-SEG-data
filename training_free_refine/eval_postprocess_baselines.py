@@ -18,6 +18,7 @@ from .eval_text4seg_outputs import evaluation_items, resize_float, resize_mask
 from .postprocess_baselines import (
     PostprocessBaselineConfig,
     densecrf_probability,
+    fast_bilateral_solver_probability,
     guided_filter_probability,
     hard_mask_probability,
     slic_region_average_probability,
@@ -25,7 +26,14 @@ from .postprocess_baselines import (
 from .refiner import TrainingFreeRefineConfig, TrainingFreeUncertaintyRefiner, stamp_probability
 
 
-METHODS = ("base", "densecrf", "guided_filter", "slic_average", "freeref")
+METHODS = (
+    "base",
+    "densecrf",
+    "guided_filter",
+    "fast_bilateral_solver",
+    "slic_average",
+    "freeref",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,6 +61,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--densecrf-iterations", type=int, default=5)
     parser.add_argument("--guided-radius", type=int, default=8)
     parser.add_argument("--guided-epsilon", type=float, default=1e-3)
+    parser.add_argument("--fbs-sigma-spatial", type=float, default=16.0)
+    parser.add_argument("--fbs-sigma-luma", type=float, default=8.0)
+    parser.add_argument("--fbs-sigma-chroma", type=float, default=8.0)
+    parser.add_argument("--fbs-lambda", type=float, default=128.0)
+    parser.add_argument("--fbs-iterations", type=int, default=25)
+    parser.add_argument("--fbs-max-tolerance", type=float, default=1e-5)
     return parser.parse_args()
 
 
@@ -140,6 +154,12 @@ def main() -> int:
         densecrf_iterations=args.densecrf_iterations,
         guided_radius=args.guided_radius,
         guided_epsilon=args.guided_epsilon,
+        fbs_sigma_spatial=args.fbs_sigma_spatial,
+        fbs_sigma_luma=args.fbs_sigma_luma,
+        fbs_sigma_chroma=args.fbs_sigma_chroma,
+        fbs_lambda=args.fbs_lambda,
+        fbs_iterations=args.fbs_iterations,
+        fbs_max_tolerance=args.fbs_max_tolerance,
         n_segments=args.n_segments,
         compactness=args.compactness,
         slic_sigma=args.slic_sigma,
@@ -168,6 +188,8 @@ def main() -> int:
             return densecrf_probability(image, probability, baseline_config)
         if method == "guided_filter":
             return guided_filter_probability(image, probability, baseline_config)
+        if method == "fast_bilateral_solver":
+            return fast_bilateral_solver_probability(image, probability, baseline_config)
         if method == "slic_average":
             return slic_region_average_probability(image, probability, baseline_config)
         if method == "freeref":

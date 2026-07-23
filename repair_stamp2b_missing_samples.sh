@@ -18,7 +18,7 @@ EMPTY_ON_FAILURE=1 \
 
 for specification in \
   "refcoco_testA:refcoco_testA_full_stamp2b" \
-  "refcoco+_testB:refcoplus_testB_full_stamp2b"; do
+  "refcoco+_testB:refcocoplus_testB_full_stamp2b"; do
   split="${specification%%:*}"
   dump_name="${specification#*:}"
   expected="$("${STAMP_ENV_PATH}/bin/python" -c \
@@ -38,14 +38,14 @@ done
   --summary "refcoco_testB=${ROOT}/outputs/training_free_refine_stamp2b_refcoco_testB_full/eval_summary.json" \
   --summary "refcoco+_val=${ROOT}/outputs/training_free_refine_stamp2b_refcoplus_val_full/eval_summary.json" \
   --summary "refcoco+_testA=${ROOT}/outputs/training_free_refine_stamp2b_refcoplus_testA_full/eval_summary.json" \
-  --summary "refcoco+_testB=${ROOT}/outputs/training_free_refine_stamp2b_refcoplus_testB_full/eval_summary.json" \
+  --summary "refcoco+_testB=${ROOT}/outputs/training_free_refine_stamp2b_refcocoplus_testB_full/eval_summary.json" \
   --output-dir "${ROOT}/outputs/training_free_refine_stamp2b_refcoco_family_full_comparison" \
   --title "STAMP-2B Training-Free RefCOCO and RefCOCO+ Evaluation"
 
 timestamp="$(date '+%Y%m%d_%H%M%S')"
 for directory in \
   "${ROOT}/outputs/stamp_official_samh_stamp-2b_refcoco_testA" \
-  "${ROOT}/outputs/stamp_official_samh_stamp-2b_refcoplus_testB"; do
+  "${ROOT}/outputs/stamp_official_samh_stamp-2b_refcocoplus_testB"; do
   if [[ -f "${directory}/eval_summary.json" ]]; then
     mv "${directory}/eval_summary.json" "${directory}/eval_summary.before_sample_repair_${timestamp}.json"
   fi

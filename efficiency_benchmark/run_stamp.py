@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--min-pixels", type=int, default=802816)
     parser.add_argument("--max-pixels", type=int, default=1003520)
+    parser.add_argument("--n-segments", type=int, default=1024)
     parser.add_argument("--allow-other-gpu", action="store_true")
     return parser.parse_args()
 
@@ -105,7 +106,7 @@ def main() -> int:
         max_pixels=args.max_pixels,
     )
     question_templates = load_official_question_templates(code_dir)
-    config = TrainingFreeRefineConfig()
+    config = TrainingFreeRefineConfig(n_segments=args.n_segments)
     refiner = (
         GpuTrainingFreeUncertaintyRefiner(config)
         if args.variant in {"freeref_gpu", "freeref_sam_h"}
@@ -193,6 +194,7 @@ def main() -> int:
             "freeref_backend": (
                 "cucim-cupy-local-slic" if args.variant == "freeref_gpu" else None
             ),
+            "n_segments": args.n_segments if args.variant == "freeref_gpu" else None,
         },
         rows,
         peak_gpu_gib,
