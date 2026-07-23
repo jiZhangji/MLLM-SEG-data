@@ -27,6 +27,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--stamp-code-dir", type=Path, required=True)
     parser.add_argument("--sam-path", type=Path, required=True)
+    parser.add_argument(
+        "--sam-model-type",
+        choices=("vit_b", "vit_l", "vit_h"),
+        default="vit_h",
+    )
     parser.add_argument("--model-label", required=True)
     parser.add_argument("--split-name", required=True)
     parser.add_argument("--pattern", default="*.pt")
@@ -154,7 +159,15 @@ def save_visualization(
     canvas.save(path)
 
 
-def load_sam(stamp_code_dir: Path, sam_path: Path):
+def sam_protocol_name(model_type: str) -> str:
+    return (
+        "stamp_official_frozen_sam_h_v1"
+        if model_type == "vit_h"
+        else f"stamp_released_prompting_frozen_sam_{model_type}_v1"
+    )
+
+
+def load_sam(stamp_code_dir: Path, sam_path: Path, model_type: str = "vit_h"):
     resolved_code_dir = stamp_code_dir.resolve()
     code_dir = str(resolved_code_dir)
     if code_dir not in sys.path:
@@ -170,7 +183,7 @@ def load_sam(stamp_code_dir: Path, sam_path: Path):
     compute_logits_from_mask = official_utils.compute_logits_from_mask
     masks_sample_points = official_utils.masks_sample_points
 
-    sam = sam_model_registry["vit_h"](checkpoint=str(sam_path))
+    sam = sam_model_registry[model_type](checkpoint=str(sam_path))
     sam = sam.to(dtype=torch.float32, device="cuda")
     sam.eval()
     return SamPredictor(sam), compute_logits_from_mask, masks_sample_points, utils_path
@@ -181,11 +194,17 @@ def main() -> int:
     if args.limit < 0 or args.cascade_steps < 0:
         raise ValueError("limit and cascade-steps must be non-negative.")
     if args.point_count != 10:
-        raise ValueError("The released STAMP SAM-H protocol requires exactly 10 points per class.")
+        raise ValueError("The released STAMP frozen-SAM protocol requires exactly 10 points per class.")
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required for SAM-H evaluation.")
-    if not args.sam_path.is_file() or args.sam_path.stat().st_size < 2_000_000_000:
-        raise FileNotFoundError(f"A complete SAM-H checkpoint was not found at {args.sam_path}.")
+        raise RuntimeError("CUDA is required for frozen-SAM evaluation.")
+    minimum_checkpoint_bytes = {"vit_b": 300_000_000, "vit_l": 900_000_000, "vit_h": 2_000_000_000}
+    if (
+        not args.sam_path.is_file()
+        or args.sam_path.stat().st_size < minimum_checkpoint_bytes[args.sam_model_type]
+    ):
+        raise FileNotFoundError(
+            f"A complete SAM {args.sam_model_type} checkpoint was not found at {args.sam_path}."
+        )
 
     dump_paths = sorted(args.input_dir.glob(args.pattern))
     if args.limit:
@@ -214,7 +233,7 @@ def main() -> int:
     )
     refiner = TrainingFreeUncertaintyRefiner(config)
     predictor, compute_logits_from_mask, masks_sample_points, official_utils_path = load_sam(
-        args.stamp_code_dir, args.sam_path
+        args.stamp_code_dir, args.sam_path, args.sam_model_type
     )
 
     variants = ("coarse", "freeref", "coarse_sam", "freeref_sam")
@@ -358,13 +377,15 @@ def main() -> int:
         "model": args.model_label,
         "split": args.split_name,
         "samples": count,
-        "protocol": "stamp_official_frozen_sam_h_v1",
+        "protocol": sam_protocol_name(args.sam_model_type),
         "note": (
-            "Uses STAMP eval.utils.compute_logits_from_mask and masks_sample_points, "
-            "followed by the released initial SAM prediction and two cascade passes. "
+            "Uses STAMP eval.utils.compute_logits_from_mask and masks_sample_points with "
+            f"frozen SAM {args.sam_model_type}, followed by the released initial prediction "
+            "and two cascade passes. "
             "The STAMP and FreeRef branches use the same per-sample RNG seed."
         ),
         "sam_checkpoint": str(args.sam_path),
+        "sam_model_type": args.sam_model_type,
         "official_stamp_utils": str(official_utils_path),
         "sam_failures_with_input_fallback": failure_count,
         "config": asdict(config),
@@ -372,6 +393,7 @@ def main() -> int:
             "point_count_per_class": 10,
             "cascade_steps": args.cascade_steps,
             "seed": args.seed,
+            "model_type": args.sam_model_type,
             "paired_seed_between_branches": True,
             "mask_logit_implementation": "STAMP/eval/utils.py:compute_logits_from_mask",
             "point_implementation": "STAMP/eval/utils.py:masks_sample_points",

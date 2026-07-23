@@ -27,6 +27,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--text4seg-code-dir", type=Path, required=True)
     parser.add_argument("--sam-path", type=Path, required=True)
+    parser.add_argument(
+        "--sam-model-type",
+        choices=("vit_b", "vit_l", "vit_h"),
+        default="vit_h",
+    )
     parser.add_argument("--model-label", default="Text4Seg-7B-p24")
     parser.add_argument("--split-name", required=True)
     parser.add_argument("--limit", type=int, default=0)
@@ -97,14 +102,22 @@ def load_manifest(path: Path, limit: int) -> list[dict[str, object]]:
     return rows[:limit] if limit else rows
 
 
-def load_sam(text4seg_code_dir: Path, sam_path: Path):
+def sam_protocol_name(model_type: str) -> str:
+    return (
+        "text4seg_public_p24_paired_frozen_sam_h_v1"
+        if model_type == "vit_h"
+        else f"text4seg_public_p24_paired_frozen_sam_{model_type}_v1"
+    )
+
+
+def load_sam(text4seg_code_dir: Path, sam_path: Path, model_type: str = "vit_h"):
     code_dir = str(text4seg_code_dir.resolve())
     if code_dir not in sys.path:
         sys.path.insert(0, code_dir)
     from llava.model.segment_anything import SamPredictor, sam_model_registry  # type: ignore[import-not-found]
     from llava.model.segment_anything.utils.transforms import ResizeLongestSide  # type: ignore[import-not-found]
 
-    sam = sam_model_registry["vit_h"](checkpoint=str(sam_path))
+    sam = sam_model_registry[model_type](checkpoint=str(sam_path))
     sam = sam.to(dtype=torch.float32, device="cuda")
     sam.eval()
     return SamPredictor(sam), ResizeLongestSide
@@ -188,9 +201,15 @@ def main() -> int:
     if args.point_count <= 0:
         raise ValueError("point-count must be positive.")
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required for frozen SAM-H evaluation.")
-    if not args.sam_path.is_file() or args.sam_path.stat().st_size < 2_000_000_000:
-        raise FileNotFoundError(f"Complete SAM-H checkpoint not found: {args.sam_path}")
+        raise RuntimeError("CUDA is required for frozen-SAM evaluation.")
+    minimum_checkpoint_bytes = {"vit_b": 300_000_000, "vit_l": 900_000_000, "vit_h": 2_000_000_000}
+    if (
+        not args.sam_path.is_file()
+        or args.sam_path.stat().st_size < minimum_checkpoint_bytes[args.sam_model_type]
+    ):
+        raise FileNotFoundError(
+            f"Complete SAM {args.sam_model_type} checkpoint not found: {args.sam_path}"
+        )
 
     items = load_manifest(args.manifest, args.limit)
     if not items:
@@ -209,7 +228,9 @@ def main() -> int:
         threshold=args.threshold,
     )
     refiner = TrainingFreeUncertaintyRefiner(config)
-    predictor, resize_longest_side = load_sam(args.text4seg_code_dir, args.sam_path)
+    predictor, resize_longest_side = load_sam(
+        args.text4seg_code_dir, args.sam_path, args.sam_model_type
+    )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     variants = ("coarse", "freeref", "coarse_sam", "freeref_sam")
     mask_dirs = {name: args.output_dir / f"{name}_masks" for name in variants}
@@ -353,18 +374,20 @@ def main() -> int:
         "model": args.model_label,
         "split": args.split_name,
         "samples": count,
-        "protocol": "text4seg_public_p24_paired_frozen_sam_h_v1",
+        "protocol": sam_protocol_name(args.sam_model_type),
         "note": (
-            "Coarse and FreeRef masks prompt the same frozen SAM-H with paired per-sample "
-            "random seeds, 10 points per class, and two cascade passes."
+            f"Coarse and FreeRef masks prompt the same frozen SAM {args.sam_model_type} "
+            "with paired per-sample random seeds, 10 points per class, and two cascade passes."
         ),
         "sam_checkpoint": str(args.sam_path),
+        "sam_model_type": args.sam_model_type,
         "sam_failures_with_input_fallback": failure_count,
         "config": asdict(config),
         "sam_config": {
             "point_count_per_class": args.point_count,
             "cascade_steps": args.cascade_steps,
             "seed": args.seed,
+            "model_type": args.sam_model_type,
             "paired_seed_between_branches": True,
             "mask_logit_implementation": "training_free_refine.export_text4seg_masks:compute_sam_logits",
             "point_implementation": "training_free_refine.export_text4seg_masks:sample_mask_points",
@@ -422,4 +445,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
