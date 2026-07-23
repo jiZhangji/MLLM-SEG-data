@@ -15,6 +15,13 @@ METHOD_COLORS = {
     "SAM-H": "#d1495b",
     "FreeRef": "#277da1",
 }
+ANNOTATION_OFFSETS = {
+    "DenseCRF": (7, -16),
+    "Guided Filter": (7, 9),
+    "SLIC Averaging": (-78, 9),
+    "SAM-H": (7, 10),
+    "FreeRef": (7, 9),
+}
 METRIC_SPECS = (
     ("delta_mIoU", r"$\Delta$mIoU", "#2a9d8f"),
     ("delta_cIoU", r"$\Delta$cIoU", "#277da1"),
@@ -122,13 +129,21 @@ def save_accuracy_latency(rows: list[dict[str, object]], output_dir: Path, dpi: 
                 linewidth=0.7,
                 zorder=3,
             )
-            axis.annotate(method, (x, y), xytext=(5, 5), textcoords="offset points", fontsize=8)
+            axis.annotate(
+                method,
+                (x, y),
+                xytext=ANNOTATION_OFFSETS[method],
+                textcoords="offset points",
+                fontsize=8,
+                bbox={"boxstyle": "round,pad=0.18", "fc": "white", "ec": "none", "alpha": 0.9},
+            )
         axis.axhline(0.0, color="#222222", linewidth=0.8)
         axis.set_title(model, fontsize=11, fontweight="bold")
         axis.set_xlabel("Post-processing time (seconds/sample)")
         axis.set_ylabel(r"$\Delta$cIoU (percentage points)")
         axis.grid(color="#dddddd", linewidth=0.6)
         axis.set_axisbelow(True)
+        axis.margins(x=0.16, y=0.22)
     fig.suptitle("Accuracy-latency trade-off (method-native backend)", y=1.02, fontsize=12)
     fig.text(
         0.5,
