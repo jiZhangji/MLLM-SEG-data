@@ -14,18 +14,47 @@ IMAGE_ROOT="${POLYFORMER_IMAGE_ROOT:-${REFER_ROOT}/images/mscoco/images/train201
 CONDA_ENV="${POLYFORMER_CONDA_ENV:-polyformer-freeref}"
 REFINE_ENV="${FREEREF_CONDA_ENV:-STAMP}"
 CUDA_DEVICE="${CUDA_DEVICE:-0}"
+DATASET="${POLYFORMER_DATASET:-refcoco}"
+SPLIT_BY="${POLYFORMER_SPLIT_BY:-}"
+SPLIT="${POLYFORMER_SPLIT:-testA}"
 LIMIT="${POLYFORMER_LIMIT:-64}"
 OFFSET="${POLYFORMER_OFFSET:-0}"
 BATCH_SIZE="${POLYFORMER_BATCH_SIZE:-8}"
 MIN_FREE_MB="${POLYFORMER_MIN_FREE_MB:-30000}"
+if [[ -z "${SPLIT_BY}" ]]; then
+  if [[ "${DATASET}" == refcocog ]]; then SPLIT_BY=umd; else SPLIT_BY=unc; fi
+fi
+if [[ -z "${POLYFORMER_CHECKPOINT:-}" ]]; then
+  case "${DATASET}" in
+    refcoco) CHECKPOINT="${WEIGHTS_ROOT}/polyformer/polyformer_l_refcoco.pt" ;;
+    refcoco+) CHECKPOINT="${WEIGHTS_ROOT}/polyformer/polyformer_l_refcoco+.pt" ;;
+    refcocog) CHECKPOINT="${WEIGHTS_ROOT}/polyformer/polyformer_l_refcocog.pt" ;;
+    *) echo "ERROR: unsupported PolyFormer dataset: ${DATASET}" >&2; exit 2 ;;
+  esac
+fi
+SAFE_DATASET="${DATASET//+/plus}"
+RUN_NAME="${SAFE_DATASET}_${SPLIT}"
 OUTPUT_ROOT="${POLYFORMER_OUTPUT_ROOT:-${ROOT}/outputs/polyformer_freeref_smoke_n${LIMIT}_o${OFFSET}}"
+PAPER_MIOU="${POLYFORMER_PAPER_MIOU:-}"
+if [[ -z "${PAPER_MIOU}" ]]; then
+  case "${DATASET}_${SPLIT}" in
+    refcoco_val) PAPER_MIOU=76.94 ;;
+    refcoco_testA) PAPER_MIOU=78.49 ;;
+    refcoco_testB) PAPER_MIOU=74.83 ;;
+    refcoco+_val) PAPER_MIOU=72.15 ;;
+    refcoco+_testA) PAPER_MIOU=75.71 ;;
+    refcoco+_testB) PAPER_MIOU=66.73 ;;
+    refcocog_val) PAPER_MIOU=71.15 ;;
+    refcocog_test) PAPER_MIOU=71.17 ;;
+  esac
+fi
 
 for required in \
   "${POLYFORMER_DIR}/evaluate.py" \
   "${CHECKPOINT}" \
   "${BERT_DIR}/vocab.txt" \
-  "${REFER_ROOT}/refcoco/instances.json" \
-  "${REFER_ROOT}/refcoco/refs(unc).p"; do
+  "${REFER_ROOT}/${DATASET}/instances.json" \
+  "${REFER_ROOT}/${DATASET}/refs(${SPLIT_BY}).p"; do
   if [[ ! -f "${required}" ]]; then
     echo "ERROR: PolyFormer prerequisite is missing: ${required}" >&2
     exit 1
@@ -37,12 +66,12 @@ if [[ ! -d "${IMAGE_ROOT}" ]]; then
 fi
 
 mkdir -p "${OUTPUT_ROOT}/data" "${OUTPUT_ROOT}/official" "${OUTPUT_ROOT}/freeref"
-TSV="${OUTPUT_ROOT}/data/refcoco_testA.tsv"
+TSV="${OUTPUT_ROOT}/data/${RUN_NAME}.tsv"
 BASE_DIR="${OUTPUT_ROOT}/official"
 REFINE_DIR="${OUTPUT_ROOT}/freeref"
 
-echo "PolyFormer-L + FreeRef paired smoke evaluation"
-echo "split=RefCOCO testA limit=${LIMIT} offset=${OFFSET} gpu=${CUDA_DEVICE}"
+echo "PolyFormer-L + FreeRef paired evaluation"
+echo "dataset=${DATASET} split_by=${SPLIT_BY} split=${SPLIT} limit=${LIMIT} offset=${OFFSET} gpu=${CUDA_DEVICE}"
 echo "output=${OUTPUT_ROOT}"
 
 CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" conda run --no-capture-output -n "${CONDA_ENV}" \
@@ -50,7 +79,7 @@ CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" conda run --no-capture-output -n "${CONDA_
   --polyformer-code-dir "${POLYFORMER_DIR}" \
   --refer-root "${REFER_ROOT}" \
   --image-root "${IMAGE_ROOT}" \
-  --dataset refcoco --split-by unc --split testA \
+  --dataset "${DATASET}" --split-by "${SPLIT_BY}" --split "${SPLIT}" \
   --output "${TSV}" --limit "${LIMIT}" --offset "${OFFSET}"
 
 while true; do
@@ -71,7 +100,7 @@ CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" conda run --no-capture-output -n "${CONDA_
   --freeref-tsv "${TSV}" \
   --freeref-bert-dir "${BERT_DIR}" \
   --freeref-method PolyFormer-L-official \
-  --freeref-split refcoco_testA \
+  --freeref-split "${DATASET}_${SPLIT}" \
   -- \
   "${TSV}" \
   --path "${CHECKPOINT}" \
@@ -79,7 +108,7 @@ CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" conda run --no-capture-output -n "${CONDA_
   --task refcoco \
   --batch-size "${BATCH_SIZE}" \
   --log-format simple --log-interval 10 \
-  --seed 7 --gen-subset refcoco_testA \
+  --seed 7 --gen-subset "${DATASET}_${SPLIT}" \
   --results-path "${BASE_DIR}/official_metrics" \
   --result_dir "${BASE_DIR}/official_batches" \
   --vis_dir "${BASE_DIR}/visualizations" \
@@ -92,10 +121,13 @@ conda run --no-capture-output -n "${REFINE_ENV}" python -m universal_freeref.eva
   --output-dir "${REFINE_DIR}" \
   --save-visualizations 8
 
+SUMMARY_ARGS=(
+  --export-summary "${BASE_DIR}/export_summary.json"
+  --freeref-summary "${REFINE_DIR}/eval_summary.json"
+  --output "${OUTPUT_ROOT}/comparison.md"
+)
+[[ -n "${PAPER_MIOU}" ]] && SUMMARY_ARGS+=(--paper-miou "${PAPER_MIOU}")
 conda run --no-capture-output -n "${REFINE_ENV}" python -m universal_freeref.summarize_polyformer \
-  --export-summary "${BASE_DIR}/export_summary.json" \
-  --freeref-summary "${REFINE_DIR}/eval_summary.json" \
-  --output "${OUTPUT_ROOT}/comparison.md" \
-  --paper-miou 78.49
+  "${SUMMARY_ARGS[@]}"
 
-echo "PolyFormer smoke evaluation completed: ${OUTPUT_ROOT}/comparison.md"
+echo "PolyFormer evaluation completed: ${OUTPUT_ROOT}/comparison.md"

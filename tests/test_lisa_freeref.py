@@ -111,6 +111,14 @@ def test_lisa_manifest_preserves_soft_logits_for_freeref(tmp_path: Path) -> None
     assert uncertainty is None
 
 
+def test_lisa_environment_can_be_prepared_without_starting_inference() -> None:
+    runner = (ROOT / "run_lisa_freeref_eval.sh").read_text(encoding="utf-8")
+    prepare = (ROOT / "prepare_lisa_freeref_env.sh").read_text(encoding="utf-8")
+    assert 'LISA_SETUP_ONLY:-0' in runner
+    assert 'if [[ "${SETUP_ONLY}" == "1" ]]' in runner
+    assert "LISA_SETUP_ENV=1 LISA_SETUP_ONLY=1" in prepare
+
+
 def test_lisa_runner_is_local_resumable_and_invokes_paired_evaluation() -> None:
     text = (ROOT / "run_lisa_freeref_eval.sh").read_text(encoding="utf-8")
     assert "HF_HUB_OFFLINE=1" in text

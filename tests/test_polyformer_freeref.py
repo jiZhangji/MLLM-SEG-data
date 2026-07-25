@@ -119,7 +119,20 @@ def test_polyformer_download_and_inference_are_separate() -> None:
     assert "download_missing_method_weights.sh" not in run_script
     assert "prepare_polyformer_freeref_env.sh" not in run_script
     assert "polyformer_l_refcoco.pt" in run_script
-    assert "--paper-miou 78.49" in run_script
     assert '${POLYFORMER_DIR}/fairseq' in run_script
     assert "tokenizers==0.13.3" in environment_script
     assert "pip install" not in run_script
+
+
+def test_polyformer_runner_selects_dataset_specific_weights_and_splits() -> None:
+    run_script = (ROOT / "run_polyformer_freeref_smoke.sh").read_text(encoding="utf-8")
+    assert 'POLYFORMER_DATASET:-refcoco' in run_script
+    assert 'POLYFORMER_SPLIT:-testA' in run_script
+    assert 'polyformer_l_refcoco.pt' in run_script
+    assert 'polyformer_l_refcoco+.pt' in run_script
+    assert 'polyformer_l_refcocog.pt' in run_script
+    assert '--dataset "${DATASET}"' in run_script
+    assert '--split-by "${SPLIT_BY}"' in run_script
+    assert '--split "${SPLIT}"' in run_script
+    assert "refcoco_testA) PAPER_MIOU=78.49" in run_script
+    assert "refcocog_test) PAPER_MIOU=71.17" in run_script

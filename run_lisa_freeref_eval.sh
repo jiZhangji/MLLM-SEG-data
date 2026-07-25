@@ -19,6 +19,7 @@ MAX_EXPRESSIONS_PER_CALL="${LISA_MAX_EXPRESSIONS_PER_CALL:-0}"
 RESULTS_ROOT="${LISA_RESULTS_ROOT:-${ROOT}/outputs/lisa_official}"
 REFINE_ROOT="${LISA_FREEREF_ROOT:-${ROOT}/outputs/universal_freeref_lisa}"
 SETUP_ENV="${LISA_SETUP_ENV:-1}"
+SETUP_ONLY="${LISA_SETUP_ONLY:-0}"
 
 export HF_HOME="${HF_HOME:-${ROOT}/.cache/huggingface}"
 export TOKENIZERS_PARALLELISM=false
@@ -60,6 +61,13 @@ if [[ "${SETUP_ENV}" == "1" ]]; then
       Pillow==10.4.0 pycocotools==2.0.7 scipy==1.11.4 tqdm==4.67.1 \
       safetensors protobuf scikit-image scikit-learn matplotlib
   fi
+fi
+
+if [[ "${SETUP_ONLY}" == "1" ]]; then
+  conda run --no-capture-output -n "${CONDA_ENV}" python -c \
+    'import cv2, numpy, peft, pycocotools, scipy, skimage, torch, transformers; print("LISA environment ready:", torch.__version__, torch.version.cuda, transformers.__version__)'
+  echo "LISA environment preparation completed."
+  exit 0
 fi
 
 echo "[3/6] Checking local checkpoints and CUDA"
