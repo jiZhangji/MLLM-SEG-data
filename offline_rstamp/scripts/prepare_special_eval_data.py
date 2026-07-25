@@ -39,7 +39,9 @@ def annotation_mask(annotation: dict[str, Any], height: int, width: int) -> np.n
     from pycocotools import mask as mask_utils
 
     rle = dict(segmentation)
-    if isinstance(rle.get("counts"), str):
+    if isinstance(rle.get("counts"), list):
+        rle = mask_utils.frPyObjects(rle, height, width)
+    elif isinstance(rle.get("counts"), str):
         rle["counts"] = rle["counts"].encode("utf-8")
     decoded = mask_utils.decode(rle)
     if decoded.ndim == 3:

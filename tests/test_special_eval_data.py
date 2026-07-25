@@ -6,13 +6,14 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import ModuleType
 from unittest.mock import patch
 
 import numpy as np
 import torch
 from PIL import Image
 
-from offline_rstamp.scripts.prepare_special_eval_data import convert_grefcoco, convert_reasonseg
+from offline_rstamp.scripts.prepare_special_eval_data import annotation_mask, convert_grefcoco, convert_reasonseg
 
 REFINE_SRC = Path(__file__).resolve().parents[1] / "offline_rstamp" / "refine_stamp_src"
 sys.path.insert(0, str(REFINE_SRC))
@@ -20,6 +21,36 @@ from refine_stamp.scripts.export_stamp_refinement_dumps import export_dumps
 
 
 class SpecialEvaluationDataTests(unittest.TestCase):
+    def test_annotation_mask_converts_uncompressed_rle(self):
+        mask_module = ModuleType("pycocotools.mask")
+        calls = []
+
+        def fr_py_objects(rle, height, width):
+            calls.append((rle, height, width))
+            return {"size": [height, width], "counts": b"compressed"}
+
+        def decode(rle):
+            self.assertEqual(rle["counts"], b"compressed")
+            return np.ones((3, 4), dtype=np.uint8)
+
+        mask_module.frPyObjects = fr_py_objects
+        mask_module.decode = decode
+        package = ModuleType("pycocotools")
+        package.mask = mask_module
+
+        with patch.dict(
+            sys.modules,
+            {"pycocotools": package, "pycocotools.mask": mask_module},
+        ):
+            result = annotation_mask(
+                {"segmentation": {"size": [3, 4], "counts": [0, 12]}},
+                3,
+                4,
+            )
+
+        self.assertEqual(calls, [({"size": [3, 4], "counts": [0, 12]}, 3, 4)])
+        self.assertTrue(result.all())
+
     def test_grefcoco_merges_targets_and_preserves_no_target(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
