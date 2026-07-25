@@ -107,7 +107,7 @@ def label(
         x,
         y,
         text,
-        fontsize=size,
+        fontsize=size * 0.72,
         color=color,
         fontweight=weight,
         ha=ha,
@@ -117,7 +117,15 @@ def label(
     )
 
 
-def section_title(ax: plt.Axes, x: float, y: float, marker: str, text: str) -> None:
+def section_title(
+    ax: plt.Axes,
+    x: float,
+    y: float,
+    marker: str,
+    text: str,
+    *,
+    size: float = 11.3,
+) -> None:
     label(ax, x, y, marker, size=10.4, color=WHITE, weight="bold")
     ax.add_patch(
         FancyBboxPatch(
@@ -131,7 +139,7 @@ def section_title(ax: plt.Axes, x: float, y: float, marker: str, text: str) -> N
             zorder=3,
         )
     )
-    label(ax, x + 0.020, y, text, size=11.3, weight="bold", ha="left")
+    label(ax, x + 0.020, y, text, size=size, weight="bold", ha="left")
 
 
 def inset(fig: plt.Figure, rect: tuple[float, float, float, float]) -> plt.Axes:
@@ -292,8 +300,62 @@ def show_map(
         spine.set_color(border)
         spine.set_linewidth(0.8)
     if title:
-        axis.set_title(title, fontsize=7.1, color=INK, pad=2, fontweight="semibold")
+        axis.set_title(title, fontsize=5.2, color=INK, pad=1.5, fontweight="semibold")
     return axis
+
+
+def save_component_images(
+    output_dir: Path,
+    demo: dict[str, np.ndarray],
+) -> list[Path]:
+    """Export the code-generated raster ingredients used by the main figure."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    labels_map, _ = voronoi_superpixels(*demo["p"].shape)
+    boundary = region_boundary(labels_map)
+    pooled_p = np.zeros_like(demo["p"])
+    pooled_u = np.zeros_like(demo["u"])
+    for region in np.unique(labels_map):
+        selected = labels_map == region
+        pooled_p[selected] = float(demo["p"][selected].mean())
+        pooled_u[selected] = float(demo["u"][selected].mean())
+
+    slic_scene = demo["scene"].copy()
+    slic_scene[boundary] = np.array(colors.to_rgb(WHITE))
+
+    base_mask = demo["p"] >= 0.5
+    final_mask = demo["refined"] >= 0.5
+    changes = np.zeros((*base_mask.shape, 3), dtype=float)
+    changes[:] = np.array(colors.to_rgb("#ECEFF1"))
+    changes[base_mask & final_mask] = np.array(colors.to_rgb("#9AA5AB"))
+    changes[(~base_mask) & final_mask] = np.array(colors.to_rgb(GREEN))
+    changes[base_mask & (~final_mask)] = np.array(colors.to_rgb(CORAL))
+
+    components: tuple[tuple[str, np.ndarray, str | None], ...] = (
+        ("input_scene.png", demo["scene"], None),
+        ("soft_probability.png", demo["p"], "Blues"),
+        ("soft_intervention.png", demo["u"], "magma"),
+        ("hard_mask.png", demo["hard"], "gray"),
+        ("boundary_permission.png", demo["u_hard"], "magma"),
+        ("regional_probability.png", pooled_p, "Blues"),
+        ("regional_intervention.png", pooled_u, "magma"),
+        ("slic_superpixels.png", slic_scene, None),
+        ("regional_field.png", demo["r"], "Blues"),
+        ("refined_probability.png", demo["refined"], "Blues"),
+        ("changed_pixels.png", changes, None),
+    )
+    outputs: list[Path] = []
+    metadata = {"Software": "FreeRef framework figure generator"}
+    for filename, array, cmap in components:
+        output = output_dir / filename
+        save_args: dict[str, object] = {
+            "origin": "upper",
+            "metadata": metadata,
+        }
+        if cmap is not None:
+            save_args.update({"cmap": cmap, "vmin": 0, "vmax": 1})
+        plt.imsave(output, np.clip(array, 0, 1), **save_args)
+        outputs.append(output)
+    return outputs
 
 
 def draw_panel_a(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> None:
@@ -312,7 +374,7 @@ def draw_panel_a(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> 
     box(ax, x0 + 0.018, 0.390, 0.105, 0.070, face="#E8EEF1", edge="#758891")
     label(ax, x0 + 0.0705, 0.425, "Any Frozen\nMLLM Segmenter", size=7.5, weight="bold")
     box(ax, x0 + 0.018, 0.278, 0.105, 0.060, face=WHITE, edge=INK)
-    label(ax, x0 + 0.0705, 0.308, "Observable Output  $O$", size=7.2, weight="bold")
+    label(ax, x0 + 0.0705, 0.308, "Output  $O$", size=7.2, weight="bold")
     arrow(ax, (x0 + 0.0705, 0.500), (x0 + 0.0705, 0.463))
     arrow(ax, (x0 + 0.0705, 0.389), (x0 + 0.0705, 0.340))
 
@@ -343,7 +405,7 @@ def draw_panel_a(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> 
 def draw_panel_b(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> None:
     x0, x1 = 0.352, 0.744
     box(ax, x0, 0.075, x1 - x0, 0.875, face="#FBF8F1", edge="#D7CDAE", radius=0.012)
-    section_title(ax, x0 + 0.020, 0.918, "b", "Reliability-Weighted Regional Inference")
+    section_title(ax, x0 + 0.020, 0.918, "b", "Reliability-Weighted Inference")
     label(ax, x0 + 0.020, 0.855, "Semantic evidence - what to preserve", size=8.8, weight="bold", ha="left", color=CORAL)
     label(ax, x0 + 0.020, 0.485, "Image structure - where to propagate", size=8.8, weight="bold", ha="left", color=GREEN)
 
@@ -362,14 +424,14 @@ def draw_panel_b(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> 
         region_p.append(p_value)
         region_u.append(u_value)
 
-    show_map(fig, (x0 + 0.018, 0.670, 0.092, 0.145), pooled_p, cmap="Blues", title="Pool $p$ over SLIC")
-    show_map(fig, (x0 + 0.118, 0.670, 0.092, 0.145), pooled_u, cmap="magma", title="Pool $u$ over SLIC")
+    show_map(fig, (x0 + 0.018, 0.670, 0.092, 0.145), pooled_p, cmap="Blues", title="Regional $\\bar p$")
+    show_map(fig, (x0 + 0.118, 0.670, 0.092, 0.145), pooled_u, cmap="magma", title="Regional $\\bar u$")
 
     graph_ax = inset(fig, (x0 + 0.218, 0.650, 0.092, 0.175))
     graph_ax.set_xlim(0, demo["p"].shape[1])
     graph_ax.set_ylim(demo["p"].shape[0], 0)
     graph_ax.set_aspect("equal")
-    graph_ax.set_title("Region graph", fontsize=7.1, color=INK, pad=2, fontweight="semibold")
+    graph_ax.set_title("Region graph", fontsize=5.2, color=INK, pad=1.5, fontweight="semibold")
     rows, cols = 7, 9
     for row in range(rows):
         for col in range(cols):
@@ -380,22 +442,22 @@ def draw_panel_b(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> 
                 graph_ax.plot([centers[index, 1], centers[index + cols, 1]], [centers[index, 0], centers[index + cols, 0]], color="#C8B897", lw=0.45)
     graph_ax.scatter(centers[:, 1], centers[:, 0], c=region_p, cmap="Blues", vmin=0, vmax=1, s=13, edgecolor=INK, linewidth=0.25)
 
-    box(ax, x0 + 0.316, 0.633, 0.066, 0.202, face=WHITE, edge="#C7B988")
-    label(ax, x0 + 0.349, 0.810, r"targets $t_i$", size=7.4, weight="bold")
+    box(ax, x0 + 0.310, 0.633, 0.074, 0.202, face=WHITE, edge="#C7B988")
+    label(ax, x0 + 0.347, 0.810, r"anchors $t_i$", size=7.4, weight="bold")
     for center_y, color, text in (
-        (0.765, BLUE, "confident FG\nstrong anchor"),
-        (0.704, "#7D8790", "confident BG\nstrong anchor"),
-        (0.643, CORAL, "uncertain\nweak anchor"),
+        (0.765, BLUE, "FG anchor"),
+        (0.704, "#7D8790", "BG anchor"),
+        (0.643, CORAL, "editable"),
     ):
-        ax.scatter([x0 + 0.328], [center_y], s=34, c=[color], edgecolors=INK, linewidths=0.4, zorder=6)
-        label(ax, x0 + 0.337, center_y, text, size=5.7, ha="left")
-    label(ax, x0 + 0.349, 0.616, r"$a_i=(1-\bar u_i)^\gamma+\epsilon_a+\kappa\mathbf{1}_{\rm seed}$", size=5.8)
+        ax.scatter([x0 + 0.322], [center_y], s=32, c=[color], edgecolors=INK, linewidths=0.4, zorder=6)
+        label(ax, x0 + 0.332, center_y, text, size=5.7, ha="left")
+    label(ax, x0 + 0.347, 0.616, r"$a_i\uparrow$ as $\bar u_i\downarrow$", size=6.0)
 
     slic_ax = inset(fig, (x0 + 0.018, 0.270, 0.105, 0.170))
     slic_scene = demo["scene"].copy()
     slic_scene[boundary] = np.array(colors.to_rgb(WHITE))
     slic_ax.imshow(slic_scene)
-    slic_ax.set_title("SLIC superpixels", fontsize=7.1, color=INK, pad=2, fontweight="semibold")
+    slic_ax.set_title("SLIC superpixels", fontsize=5.2, color=INK, pad=1.5, fontweight="semibold")
     for spine in slic_ax.spines.values():
         spine.set_visible(True)
         spine.set_color(LINE)
@@ -406,28 +468,29 @@ def draw_panel_b(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> 
     adj_ax.set_xlim(0, demo["p"].shape[1])
     adj_ax.set_ylim(demo["p"].shape[0], 0)
     adj_ax.set_aspect("equal")
-    adj_ax.set_title("Region adjacency", fontsize=7.1, color=INK, pad=2, fontweight="semibold")
+    adj_ax.set_title("Region adjacency", fontsize=5.2, color=INK, pad=1.5, fontweight="semibold")
     selected_ids = [20, 21, 22, 29, 30, 31, 38, 39, 40]
     for first, second in ((20, 21), (21, 22), (20, 29), (21, 30), (22, 31), (29, 30), (30, 31), (29, 38), (30, 39), (31, 40), (38, 39), (39, 40)):
         adj_ax.plot([centers[first, 1], centers[second, 1]], [centers[first, 0], centers[second, 0]], color=GREEN, lw=1.0)
     adj_ax.scatter(centers[selected_ids, 1], centers[selected_ids, 0], s=18, c=YELLOW, edgecolor=INK, linewidth=0.35)
 
     box(ax, x0 + 0.240, 0.275, 0.067, 0.155, face=WHITE, edge="#AFC6B5")
-    label(ax, x0 + 0.2735, 0.404, r"Lab affinity $w_{ij}$", size=6.8, weight="bold")
-    for y, line_width, text in ((0.365, 2.4, "similar\nstrong"), (0.312, 0.6, "across edge\nweak")):
+    label(ax, x0 + 0.2735, 0.404, r"Affinity $w_{ij}$", size=6.8, weight="bold")
+    for y, line_width, text in ((0.365, 2.4, "strong"), (0.312, 0.6, "weak")):
         ax.scatter([x0 + 0.254, x0 + 0.276], [y, y], s=24, c=[GREEN, GREEN], edgecolors=INK, linewidths=0.35, zorder=5)
         ax.plot([x0 + 0.256, x0 + 0.274], [y, y], color=GREEN, lw=line_width, zorder=4)
         label(ax, x0 + 0.285, y, text, size=5.6, ha="left")
     label(ax, x0 + 0.2735, 0.286, r"$L=D-W$", size=8.4, weight="bold")
 
-    box(ax, x0 + 0.316, 0.307, 0.066, 0.114, face="#FFF4D7", edge=YELLOW)
-    label(ax, x0 + 0.349, 0.398, "Sparse SPD solve", size=7.0, weight="bold")
-    label(ax, x0 + 0.349, 0.363, r"$(A+\lambda L+\delta I)q^*=At$", size=6.2)
-    label(ax, x0 + 0.349, 0.327, "unique, range-preserving\nno learning", size=5.9, color=MUTED)
-    arrow(ax, (x0 + 0.310, 0.736), (x0 + 0.346, 0.424), color=CORAL, connection="arc3,rad=0.18")
-    arrow(ax, (x0 + 0.306, 0.347), (x0 + 0.316, 0.360), color=GREEN)
+    box(ax, x0 + 0.306, 0.307, 0.078, 0.114, face="#FFF4D7", edge=YELLOW)
+    label(ax, x0 + 0.345, 0.398, "Sparse SPD solve", size=6.6, weight="bold")
+    label(ax, x0 + 0.345, 0.369, r"$H=A+\lambda L+\delta I$", size=5.8)
+    label(ax, x0 + 0.345, 0.346, r"$Hq^*=At$", size=6.0, weight="bold")
+    label(ax, x0 + 0.345, 0.322, "unique | no learning", size=5.4, color=MUTED)
+    arrow(ax, (x0 + 0.306, 0.736), (x0 + 0.343, 0.424), color=CORAL, connection="arc3,rad=0.18")
+    arrow(ax, (x0 + 0.306, 0.347), (x0 + 0.308, 0.360), color=GREEN)
 
-    q_ax = show_map(fig, (x0 + 0.300, 0.112, 0.078, 0.145), demo["r"], cmap="Blues", title="Regional field  $q^*$")
+    q_ax = show_map(fig, (x0 + 0.300, 0.112, 0.078, 0.145), demo["r"], cmap="Blues", title="Regional $q^*$")
     q_ax.contour(demo["r"], levels=[0.5], colors=[CORAL], linewidths=0.8)
     arrow(ax, (x0 + 0.349, 0.306), (x0 + 0.339, 0.258), color=PURPLE)
 
@@ -435,11 +498,18 @@ def draw_panel_b(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> 
 def draw_panel_c(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> None:
     x0, x1 = 0.754, 0.988
     box(ax, x0, 0.075, x1 - x0, 0.875, face="#F8F5FA", edge="#CFC5D8", radius=0.012)
-    section_title(ax, x0 + 0.020, 0.918, "c", "Bounded Pixel Reconstruction")
+    section_title(
+        ax,
+        x0 + 0.020,
+        0.918,
+        "c",
+        "Bounded Pixel\nReconstruction",
+        size=8.8,
+    )
 
     show_map(fig, (x0 + 0.014, 0.680, 0.064, 0.130), demo["p"], cmap="Blues", title="Original $p$")
-    show_map(fig, (x0 + 0.086, 0.680, 0.064, 0.130), demo["u"], cmap="magma", title="Intervention $u$")
-    show_map(fig, (x0 + 0.158, 0.680, 0.064, 0.130), demo["r"], cmap="Blues", title="Lift $q^*\!\to r$")
+    show_map(fig, (x0 + 0.086, 0.680, 0.064, 0.130), demo["u"], cmap="magma", title="Gate $u$")
+    show_map(fig, (x0 + 0.158, 0.680, 0.064, 0.130), demo["r"], cmap="Blues", title="Lifted $r$")
     arrow(ax, (x0 + 0.078, 0.745), (x0 + 0.084, 0.745), color=PURPLE)
     arrow(ax, (x0 + 0.150, 0.745), (x0 + 0.156, 0.745), color=PURPLE)
 
@@ -459,32 +529,32 @@ def draw_panel_c(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> 
     changes[corrected] = np.array(colors.to_rgb(GREEN))
     changes[removed] = np.array(colors.to_rgb(CORAL))
 
-    show_map(fig, (x0 + 0.014, 0.315, 0.064, 0.135), base_mask.astype(float), cmap="gray", title="Base prediction")
+    show_map(fig, (x0 + 0.014, 0.315, 0.064, 0.135), base_mask.astype(float), cmap="gray", title="Base")
     change_ax = inset(fig, (x0 + 0.086, 0.315, 0.064, 0.135))
     change_ax.imshow(changes)
-    change_ax.set_title("Changed pixels", fontsize=7.1, color=INK, pad=2, fontweight="semibold")
+    change_ax.set_title("Changed", fontsize=5.2, color=INK, pad=1.5, fontweight="semibold")
     for spine in change_ax.spines.values():
         spine.set_visible(True)
         spine.set_color(LINE)
         spine.set_linewidth(0.8)
-    show_map(fig, (x0 + 0.158, 0.315, 0.064, 0.135), final_mask.astype(float), cmap="gray", title="FreeRef result")
+    show_map(fig, (x0 + 0.158, 0.315, 0.064, 0.135), final_mask.astype(float), cmap="gray", title="FreeRef")
     arrow(ax, (x0 + 0.117, 0.533), (x0 + 0.117, 0.452), color=PURPLE)
 
-    contour_ax = inset(fig, (x0 + 0.018, 0.105, 0.110, 0.155))
+    contour_ax = inset(fig, (x0 + 0.018, 0.160, 0.110, 0.125))
     contour_ax.imshow(demo["scene"])
     contour_ax.contour(demo["p"], levels=[0.5], colors=[CORAL], linewidths=1.0)
     contour_ax.contour(demo["refined"], levels=[0.5], colors=[GREEN], linewidths=1.0)
-    contour_ax.set_title("Localized contour update", fontsize=7.1, color=INK, pad=2, fontweight="semibold")
+    contour_ax.set_title("Contour update", fontsize=5.2, color=INK, pad=1.5, fontweight="semibold")
     for spine in contour_ax.spines.values():
         spine.set_visible(True)
         spine.set_color(LINE)
         spine.set_linewidth(0.8)
-    ax.plot([x0 + 0.140, x0 + 0.157], [0.225, 0.225], color=CORAL, lw=1.6)
-    label(ax, x0 + 0.162, 0.225, "original", size=6.1, ha="left")
-    ax.plot([x0 + 0.140, x0 + 0.157], [0.195, 0.195], color=GREEN, lw=1.6)
-    label(ax, x0 + 0.162, 0.195, "refined", size=6.1, ha="left")
-    box(ax, x0 + 0.137, 0.112, 0.080, 0.052, face=WHITE, edge=PURPLE)
-    label(ax, x0 + 0.177, 0.138, r"$|\hat p(x)-p(x)|\leq u(x)^\beta$", size=6.4, weight="bold")
+    ax.plot([x0 + 0.140, x0 + 0.157], [0.235, 0.235], color=CORAL, lw=1.6)
+    label(ax, x0 + 0.162, 0.235, "original", size=6.1, ha="left")
+    ax.plot([x0 + 0.140, x0 + 0.157], [0.200, 0.200], color=GREEN, lw=1.6)
+    label(ax, x0 + 0.162, 0.200, "refined", size=6.1, ha="left")
+    box(ax, x0 + 0.018, 0.092, 0.198, 0.052, face=WHITE, edge=PURPLE)
+    label(ax, x0 + 0.117, 0.118, r"$|\hat p(x)-p(x)|\leq u(x)^\beta$", size=6.4, weight="bold")
 
 
 def build_figure() -> plt.Figure:
@@ -513,13 +583,13 @@ def build_figure() -> plt.Figure:
     draw_panel_c(fig, ax, demo)
 
     box(ax, 0.015, 0.018, 0.973, 0.040, face=INK, edge=INK, radius=0.008)
-    footer = "OUTPUT ONLY   •   NO INTERNAL FEATURES   •   NO GRADIENTS   •   NO LEARNED MASK DECODER"
+    footer = "OUTPUT ONLY   |   NO INTERNAL FEATURES   |   NO GRADIENTS   |   NO LEARNED MASK DECODER"
     text = ax.text(
         0.501,
         0.038,
         footer,
         color=WHITE,
-        fontsize=8.3,
+        fontsize=7.7,
         fontweight="bold",
         ha="center",
         va="center",
@@ -566,6 +636,11 @@ def main() -> int:
             )
         outputs.append(output)
     plt.close(fig)
+    component_outputs = save_component_images(
+        output_dir / f"{args.stem}_components",
+        build_demo(),
+    )
+    outputs.extend(component_outputs)
     for output in outputs:
         print(output)
     return 0
