@@ -27,6 +27,17 @@ METHODS = (
     ("freeref", "FreeRef"),
 )
 
+SPLIT_LABELS = {
+    "refcoco_val": "RefCOCO val",
+    "refcoco_testA": "RefCOCO testA",
+    "refcoco_testB": "RefCOCO testB",
+    "refcoco+_val": "RefCOCO+ val",
+    "refcoco+_testA": "RefCOCO+ testA",
+    "refcoco+_testB": "RefCOCO+ testB",
+    "refcocog_val": "RefCOCOg val(U)",
+    "refcocog_test": "RefCOCOg test(U)",
+}
+
 
 def split_slug(value: str) -> str:
     return value.replace("+", "plus")
@@ -37,6 +48,45 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
+
+
+def detailed_metric_table(
+    detailed: list[dict[str, object]],
+    macro: list[dict[str, object]],
+    metric: str,
+) -> list[str]:
+    split_names = [split for split, _ in SPLITS]
+    labels = [SPLIT_LABELS[split] for split in split_names]
+    title = {"mIoU": "mIoU", "cIoU": "cIoU", "bIoU": "Boundary IoU (bIoU)"}[metric]
+    lines = [
+        f"## Per-Split {title} (%)",
+        "",
+        "| Base output | Refiner | " + " | ".join(labels) + " | Avg. |",
+        "|---|---|" + "---:|" * (len(labels) + 1),
+    ]
+    for _, model_label in MODELS:
+        for _, method_label in METHODS:
+            selected = {
+                str(row["split"]): row
+                for row in detailed
+                if row["model"] == model_label and row["method"] == method_label
+            }
+            macro_row = next(
+                row
+                for row in macro
+                if row["model"] == model_label and row["method"] == method_label
+            )
+            method_cell = f"**{method_label}**" if method_label == "FreeRef" else method_label
+            values = [f"{float(selected[split][metric]):.2f}" for split in split_names]
+            average = f"{float(macro_row[metric]):.2f}"
+            if method_label == "FreeRef":
+                values = [f"**{value}**" for value in values]
+                average = f"**{average}**"
+            lines.append(
+                f"| {model_label} | {method_cell} | " + " | ".join(values) + f" | {average} |"
+            )
+    lines.append("")
+    return lines
 
 
 def main() -> int:
@@ -115,6 +165,10 @@ def main() -> int:
             "| {model} | {method} | {mIoU:.2f} | {delta_mIoU:+.2f} | {cIoU:.2f} | "
             "{delta_cIoU:+.2f} | **{bIoU:.2f}** | **{delta_bIoU:+.2f}** |".format(**row)
         )
+    lines.extend([""])
+    lines.extend(detailed_metric_table(detailed, macro, "mIoU"))
+    lines.extend(detailed_metric_table(detailed, macro, "cIoU"))
+    lines.extend(detailed_metric_table(detailed, macro, "bIoU"))
     markdown = "\n".join(lines) + "\n"
     (args.output_dir / "postprocess_full.md").write_text(markdown, encoding="utf-8")
     print(markdown, end="")

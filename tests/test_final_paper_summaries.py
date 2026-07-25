@@ -99,6 +99,12 @@ class FinalPaperSummaryTests(unittest.TestCase):
                 row for row in rows if row["model"] == "STAMP-7B" and row["method"] == "FreeRef"
             )
             self.assertAlmostEqual(freeref["delta_bIoU"], 5.0)
+            markdown = (root / "output" / "postprocess_full.md").read_text(encoding="utf-8")
+            self.assertIn("## Per-Split mIoU (%)", markdown)
+            self.assertIn("## Per-Split cIoU (%)", markdown)
+            self.assertIn("## Per-Split Boundary IoU (bIoU) (%)", markdown)
+            self.assertIn("| STAMP-7B | **FreeRef** | **75.00**", markdown)
+            self.assertIn("RefCOCOg test(U)", markdown)
 
     def test_k_timing_summary_contains_base_and_each_configuration(self):
         with TemporaryDirectory() as temporary_directory:
