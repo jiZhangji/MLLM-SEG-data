@@ -457,6 +457,37 @@ if selected rela; then
     record_manual rela official-checkpoints "${WEIGHTS_ROOT}/rela/official_checkpoints" \
       "${rela_url}" "Google Drive folder download failed; open the link and place the official checkpoints here"
   fi
+  run_artifact rela swin-base-imagenet22k file \
+    "${WEIGHTS_ROOT}/rela/swin_base_patch4_window12_384_22k.pth" \
+    'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_base_patch4_window12_384_22k.pth' \
+    download_url_file \
+    'https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_base_patch4_window12_384_22k.pth' \
+    "${WEIGHTS_ROOT}/rela/swin_base_patch4_window12_384_22k.pth" || true
+  rela_classic_root="${WEIGHTS_ROOT}/rela/classic"
+  record_plan rela classic-refcoco-checkpoints \
+    "${rela_classic_root}" 'author release or local retraining'
+  rela_classic_complete=1
+  for checkpoint in \
+    "${rela_classic_root}/refcoco/model_final.pth" \
+    "${rela_classic_root}/refcocoplus/model_final.pth" \
+    "${rela_classic_root}/refcocog/model_final.pth"; do
+    if [[ ! -f "${checkpoint}" ||
+          "$(stat -c '%s' "${checkpoint}" 2>/dev/null || printf 0)" -lt "${MIN_WEIGHT_BYTES}" ]]; then
+      rela_classic_complete=0
+    fi
+  done
+  if [[ "${rela_classic_complete}" == 1 ]]; then
+    record_status rela classic-refcoco-checkpoints complete \
+      "${rela_classic_root}" 'local retraining' \
+      'All three standard-dataset model_final.pth files passed size validation'
+  else
+    record_status rela classic-refcoco-checkpoints blocked \
+      "${rela_classic_root}" 'author release or local retraining' \
+      'The public ReLA folder contains gRefCOCO checkpoints only; Table 1(b) needs separate RefCOCO, RefCOCO+, and RefCOCOg models'
+    record_manual rela classic-refcoco-checkpoints \
+      "${rela_classic_root}" 'not publicly released by the authors' \
+      'Run run_rela_classic_training_4gpu.sh to train the three standard-dataset checkpoints; do not use the gRefCOCO checkpoint as a substitute'
+  fi
 fi
 
 if selected polyformer; then
@@ -518,10 +549,23 @@ if selected gsva; then
     'https://huggingface.co/liuhaotian/LLaVA-Lightning-7B-delta-v1-1' \
     hf_snapshot liuhaotian/LLaVA-Lightning-7B-delta-v1-1 \
     "${WEIGHTS_ROOT}/gsva/LLaVA-Lightning-7B-delta-v1-1" || true
-  record_manual gsva vicuna-7b-base \
-    "${WEIGHTS_ROOT}/gsva/LLaVA-Lightning-7B-v1-1-merged" \
-    'Official LLaVA legacy model-zoo instructions' \
-    'The released GSVA-7B bin requires the licensed LLaMA/Vicuna-7B base merged with the downloaded LLaVA delta'
+  gsva_merged="${WEIGHTS_ROOT}/gsva/LLaVA-Lightning-7B-v1-1-merged"
+  record_plan gsva vicuna-7b-base "${gsva_merged}" \
+    'Official LLaVA legacy model-zoo instructions'
+  if [[ -f "${gsva_merged}/.freeref_merge_complete" ]] &&
+     validate_artifact dir "${gsva_merged}"; then
+    record_status gsva vicuna-7b-base complete "${gsva_merged}" \
+      'user-authorized LLaMA-7B plus public LLaVA delta' \
+      'The controlled merge completion marker and model shards are present'
+  else
+    record_status gsva vicuna-7b-base blocked "${gsva_merged}" \
+      'Official LLaVA legacy model-zoo instructions' \
+      'A licensed LLaMA-7B base is required before applying the public LLaVA delta'
+    record_manual gsva vicuna-7b-base \
+      "${gsva_merged}" \
+      'Official LLaVA legacy model-zoo instructions' \
+      'The released GSVA-7B bin requires the licensed LLaMA/Vicuna-7B base merged with the downloaded LLaVA delta'
+  fi
 fi
 
 if selected read; then

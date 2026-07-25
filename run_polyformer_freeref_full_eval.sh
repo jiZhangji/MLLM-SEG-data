@@ -62,15 +62,25 @@ if (( ${#ACTIVE_PIDS[@]} > 0 )); then wait_batch; fi
 (( failed == 0 )) || exit 1
 
 summary_args=()
+table_args=()
 for spec in ${SPLIT_SPECS}; do
   IFS='|' read -r dataset split_by split <<<"${spec}"
   slug="${dataset//+/plus}_${split}"
   summary="${OUTPUT_ROOT}/${slug}/freeref/eval_summary.json"
   [[ -f "${summary}" ]] || { echo "ERROR: missing summary ${summary}" >&2; exit 1; }
   summary_args+=(--summary "PolyFormer-L_${dataset}_${split}=${summary}")
+  table_args+=(--summary "${dataset}_${split}=${summary}")
 done
 conda run --no-capture-output -n "${FREEREF_CONDA_ENV:-STAMP}" \
   python -m universal_freeref.summarize "${summary_args[@]}" \
   --output-dir "${OUTPUT_ROOT}/combined" \
   --title "PolyFormer-L Original Rasterized Polygon vs. FreeRef"
+conda run --no-capture-output -n "${FREEREF_CONDA_ENV:-STAMP}" \
+  python -m universal_freeref.summarize_table1b \
+    --method PolyFormer-L-official \
+    "${table_args[@]}" \
+    --output-dir "${OUTPUT_ROOT}/combined" \
+    --eligibility paper_candidate \
+    --expected-baseline 76.0 78.3 73.3 69.3 74.6 61.9 69.2 70.2 \
+    --note "Official dataset-specific checkpoints and official polygon rasterization."
 echo "PolyFormer full paired suite complete: ${OUTPUT_ROOT}/combined/comparison.md"

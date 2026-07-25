@@ -48,13 +48,25 @@ def test_polyformer_full_runner_covers_all_eight_splits_resumably() -> None:
     assert "combined/comparison.md" in text
 
 
-def test_ready_four_gpu_runner_is_explicit_about_supported_and_blocked_methods() -> None:
+def test_legacy_ready_runner_delegates_to_complete_ready_phase() -> None:
     text = READY_RUNNER.read_text(encoding="utf-8")
+    assert "run_remaining_six_experiments_4gpu.sh" in text
+    assert "REMAINING_SIX_PHASE=ready" in text
+    assert "READ, PolyFormer-L" in text
+    assert "GSVA when its licensed base is ready" in text
+
+
+def test_complete_four_gpu_runner_covers_ready_and_rela_phases() -> None:
+    text = (ROOT / "run_remaining_six_experiments_4gpu.sh").read_text(encoding="utf-8")
     assert "H100_GPUS" in text and "H200_GPUS" in text
-    assert "run_polyformer_freeref_full_eval.sh" in text
-    assert "run_lisa_freeref_eval.sh" in text
-    assert "ReLA/GSVA/READ: blocked" in text
-    assert "UNINEXT: blocked" in text
-    assert "run_rela" not in text
-    assert "run_gsva" not in text
-    assert "run_read" not in text
+    for runner in (
+        "run_read_freeref_full_eval.sh",
+        "run_polyformer_freeref_full_eval.sh",
+        "run_lisa_freeref_eval.sh",
+        "run_gsva_freeref_full_eval.sh",
+        "run_rela_classic_training_4gpu.sh",
+        "run_rela_freeref_full_eval.sh",
+    ):
+        assert runner in text
+    assert "UNINEXT-L remains gated" in text
+    assert "rela-train" in text and "rela-eval" in text
