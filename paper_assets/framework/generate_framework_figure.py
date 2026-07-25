@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import textwrap
 from pathlib import Path
+from typing import Any
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
@@ -25,7 +30,18 @@ WHITE = "#FFFFFF"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate the reproducible FreeRef framework figure."
+        description="Render the FreeRef framework figure from exported experiment arrays."
+    )
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--sample-bundle",
+        type=Path,
+        help="NPZ bundle exported from a real evaluation sample.",
+    )
+    source.add_argument(
+        "--demo",
+        action="store_true",
+        help="Use the synthetic layout smoke test (never used for the paper figure).",
     )
     parser.add_argument(
         "--output-dir",
@@ -35,6 +51,50 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stem", default="freeref_framework")
     parser.add_argument("--dpi", type=int, default=300)
     return parser.parse_args()
+
+
+def load_sample_bundle(path: Path) -> dict[str, Any]:
+    """Load and validate arrays exported by select_real_framework_sample.py."""
+    required = {
+        "scene",
+        "target",
+        "hard",
+        "p",
+        "u",
+        "u_hard",
+        "r",
+        "refined",
+        "changed",
+        "superpixels",
+    }
+    path = path.expanduser().resolve()
+    with np.load(path, allow_pickle=False) as payload:
+        missing = sorted(required.difference(payload.files))
+        if missing:
+            raise ValueError(f"{path} is missing arrays: {', '.join(missing)}")
+        sample: dict[str, Any] = {key: np.asarray(payload[key]) for key in required}
+        for key in ("name", "query", "model"):
+            sample[key] = str(payload[key].item()) if key in payload.files else ""
+
+    scene = np.asarray(sample["scene"])
+    if scene.ndim != 3 or scene.shape[2] != 3:
+        raise ValueError(f"scene must have shape [H, W, 3], got {scene.shape}")
+    if scene.dtype.kind in "ui":
+        scene = scene.astype(np.float32) / 255.0
+    sample["scene"] = np.clip(scene.astype(np.float32), 0.0, 1.0)
+    shape = scene.shape[:2]
+    for key in ("target", "hard", "p", "u", "u_hard", "r", "refined", "changed"):
+        value = np.asarray(sample[key])
+        if value.shape != shape:
+            raise ValueError(f"{key} must match image shape {shape}, got {value.shape}")
+        sample[key] = np.clip(value.astype(np.float32), 0.0, 1.0)
+    labels = np.asarray(sample["superpixels"])
+    if labels.shape != shape:
+        raise ValueError(f"superpixels must match image shape {shape}, got {labels.shape}")
+    if not np.isfinite(sample["p"]).all() or not np.isfinite(sample["refined"]).all():
+        raise ValueError("Probability fields contain non-finite values.")
+    sample["superpixels"] = labels.astype(np.int64)
+    return sample
 
 
 def box(
@@ -199,7 +259,8 @@ def boundary_permission(mask: np.ndarray, sigma: float = 4.0) -> np.ndarray:
     return permission
 
 
-def build_demo() -> dict[str, np.ndarray]:
+def build_demo() -> dict[str, Any]:
+    """Synthetic smoke test for layout development only."""
     height, width = 84, 112
     yy, xx = np.mgrid[0:height, 0:width]
     scene = np.zeros((height, width, 3), dtype=float)
@@ -239,6 +300,7 @@ def build_demo() -> dict[str, np.ndarray]:
     candidate = np.clip(candidate + 0.05 * smooth(scene[..., 1] - scene[..., 0], 2), 0, 1)
     refined = (1.0 - uncertainty) * probability + uncertainty * candidate
     changed = np.abs(refined - probability)
+    superpixels, _ = voronoi_superpixels(height, width)
 
     return {
         "scene": scene,
@@ -250,6 +312,10 @@ def build_demo() -> dict[str, np.ndarray]:
         "r": candidate,
         "refined": refined,
         "changed": changed,
+        "superpixels": superpixels,
+        "name": "layout-smoke-test",
+        "query": "the woman in red holding the umbrella",
+        "model": "synthetic demo",
     }
 
 
@@ -281,6 +347,109 @@ def region_boundary(labels: np.ndarray) -> np.ndarray:
     return boundary
 
 
+def region_graph(
+    labels: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return actual region ids, centroids, and unique SLIC adjacency edges."""
+    region_ids, inverse = np.unique(labels.astype(np.int64), return_inverse=True)
+    compact = inverse.reshape(labels.shape)
+    count = len(region_ids)
+    yy, xx = np.indices(labels.shape)
+    sizes = np.bincount(compact.ravel(), minlength=count).clip(min=1)
+    centers = np.column_stack(
+        (
+            np.bincount(compact.ravel(), weights=yy.ravel(), minlength=count) / sizes,
+            np.bincount(compact.ravel(), weights=xx.ravel(), minlength=count) / sizes,
+        )
+    )
+    horizontal = np.column_stack((compact[:, :-1].ravel(), compact[:, 1:].ravel()))
+    vertical = np.column_stack((compact[:-1, :].ravel(), compact[1:, :].ravel()))
+    edges = np.concatenate((horizontal, vertical), axis=0)
+    edges = edges[edges[:, 0] != edges[:, 1]]
+    if edges.size:
+        edges.sort(axis=1)
+        edges = np.unique(edges, axis=0)
+    else:
+        edges = np.empty((0, 2), dtype=np.int64)
+    return compact, centers, edges
+
+
+def pool_regions(
+    values: np.ndarray,
+    compact_labels: np.ndarray,
+    count: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    sizes = np.bincount(compact_labels.ravel(), minlength=count).clip(min=1)
+    means = (
+        np.bincount(
+            compact_labels.ravel(),
+            weights=np.asarray(values, dtype=float).ravel(),
+            minlength=count,
+        )
+        / sizes
+    )
+    return means[compact_labels], means
+
+
+def rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
+    """Small NumPy sRGB-to-CIELAB conversion used only to draw real affinities."""
+    values = np.clip(np.asarray(rgb, dtype=float), 0.0, 1.0)
+    linear = np.where(
+        values <= 0.04045,
+        values / 12.92,
+        ((values + 0.055) / 1.055) ** 2.4,
+    )
+    xyz = linear @ np.asarray(
+        [
+            [0.4124564, 0.3575761, 0.1804375],
+            [0.2126729, 0.7151522, 0.0721750],
+            [0.0193339, 0.1191920, 0.9503041],
+        ]
+    ).T
+    xyz /= np.asarray([0.95047, 1.0, 1.08883])
+    delta = 6.0 / 29.0
+    transformed = np.where(
+        xyz > delta**3,
+        np.cbrt(xyz),
+        xyz / (3.0 * delta**2) + 4.0 / 29.0,
+    )
+    return np.stack(
+        (
+            116.0 * transformed[..., 1] - 16.0,
+            500.0 * (transformed[..., 0] - transformed[..., 1]),
+            200.0 * (transformed[..., 1] - transformed[..., 2]),
+        ),
+        axis=-1,
+    )
+
+
+def region_affinities(
+    scene: np.ndarray,
+    compact_labels: np.ndarray,
+    edges: np.ndarray,
+) -> np.ndarray:
+    count = int(compact_labels.max()) + 1
+    sizes = np.bincount(compact_labels.ravel(), minlength=count).clip(min=1)
+    lab = rgb_to_lab(scene).reshape(-1, 3)
+    means = np.column_stack(
+        [
+            np.bincount(
+                compact_labels.ravel(),
+                weights=lab[:, channel],
+                minlength=count,
+            )
+            / sizes
+            for channel in range(3)
+        ]
+    )
+    if not len(edges):
+        return np.empty(0, dtype=float)
+    distances = np.linalg.norm(means[edges[:, 0]] - means[edges[:, 1]], axis=1)
+    positive = distances[distances > 1e-8]
+    scale = float(np.median(positive)) if positive.size else 1.0
+    return np.clip(np.exp(-np.square(distances / max(scale, 1e-6))), 1e-4, 1.0)
+
+
 def show_map(
     fig: plt.Figure,
     rect: tuple[float, float, float, float],
@@ -306,18 +475,14 @@ def show_map(
 
 def save_component_images(
     output_dir: Path,
-    demo: dict[str, np.ndarray],
+    demo: dict[str, Any],
 ) -> list[Path]:
-    """Export the code-generated raster ingredients used by the main figure."""
+    """Export the experiment-derived raster ingredients used by the main figure."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    labels_map, _ = voronoi_superpixels(*demo["p"].shape)
+    labels_map, centers, _ = region_graph(demo["superpixels"])
     boundary = region_boundary(labels_map)
-    pooled_p = np.zeros_like(demo["p"])
-    pooled_u = np.zeros_like(demo["u"])
-    for region in np.unique(labels_map):
-        selected = labels_map == region
-        pooled_p[selected] = float(demo["p"][selected].mean())
-        pooled_u[selected] = float(demo["u"][selected].mean())
+    pooled_p, _ = pool_regions(demo["p"], labels_map, len(centers))
+    pooled_u, _ = pool_regions(demo["u"], labels_map, len(centers))
 
     slic_scene = demo["scene"].copy()
     slic_scene[boundary] = np.array(colors.to_rgb(WHITE))
@@ -358,15 +523,17 @@ def save_component_images(
     return outputs
 
 
-def draw_panel_a(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> None:
+def draw_panel_a(fig: plt.Figure, ax: plt.Axes, demo: dict[str, Any]) -> None:
     x0, x1 = 0.015, 0.342
     box(ax, x0, 0.075, x1 - x0, 0.875, face="#F5F8FA", edge="#CBD6DC", radius=0.012)
     section_title(ax, x0 + 0.020, 0.918, "a", "Unified Output Adaptation")
 
-    label(ax, x0 + 0.052, 0.846, 'Refer to:\n"the woman in red\nholding the umbrella"', size=7.2, ha="left")
+    query = " ".join(str(demo.get("query") or "the referred object").split())
+    query = textwrap.shorten(query, width=50, placeholder="...")
+    query = textwrap.fill(query, width=17)
+    label(ax, x0 + 0.052, 0.846, f'Refer to:\n"{query}"', size=7.0, ha="left")
     scene_ax = inset(fig, (x0 + 0.018, 0.500, 0.105, 0.285))
     scene_ax.imshow(demo["scene"])
-    scene_ax.contour(demo["target"], levels=[0.5], colors=[WHITE], linewidths=0.8)
     for spine in scene_ax.spines.values():
         spine.set_visible(True)
         spine.set_color("#7C8C94")
@@ -402,27 +569,18 @@ def draw_panel_a(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> 
     label(ax, x0 + 0.332, 0.092, "$u=1$  editable", size=6.5, ha="right", color=MUTED)
 
 
-def draw_panel_b(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> None:
+def draw_panel_b(fig: plt.Figure, ax: plt.Axes, demo: dict[str, Any]) -> None:
     x0, x1 = 0.352, 0.744
     box(ax, x0, 0.075, x1 - x0, 0.875, face="#FBF8F1", edge="#D7CDAE", radius=0.012)
     section_title(ax, x0 + 0.020, 0.918, "b", "Reliability-Weighted Inference")
     label(ax, x0 + 0.020, 0.855, "Semantic evidence - what to preserve", size=8.8, weight="bold", ha="left", color=CORAL)
     label(ax, x0 + 0.020, 0.485, "Image structure - where to propagate", size=8.8, weight="bold", ha="left", color=GREEN)
 
-    labels_map, centers = voronoi_superpixels(*demo["p"].shape)
+    labels_map, centers, edges = region_graph(demo["superpixels"])
     boundary = region_boundary(labels_map)
-    pooled_p = np.zeros_like(demo["p"])
-    pooled_u = np.zeros_like(demo["u"])
-    region_p = []
-    region_u = []
-    for region in range(len(centers)):
-        selected = labels_map == region
-        p_value = float(demo["p"][selected].mean())
-        u_value = float(demo["u"][selected].mean())
-        pooled_p[selected] = p_value
-        pooled_u[selected] = u_value
-        region_p.append(p_value)
-        region_u.append(u_value)
+    pooled_p, region_p = pool_regions(demo["p"], labels_map, len(centers))
+    pooled_u, region_u = pool_regions(demo["u"], labels_map, len(centers))
+    affinities = region_affinities(demo["scene"], labels_map, edges)
 
     show_map(fig, (x0 + 0.018, 0.670, 0.092, 0.145), pooled_p, cmap="Blues", title="Regional $\\bar p$")
     show_map(fig, (x0 + 0.118, 0.670, 0.092, 0.145), pooled_u, cmap="magma", title="Regional $\\bar u$")
@@ -432,15 +590,28 @@ def draw_panel_b(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> 
     graph_ax.set_ylim(demo["p"].shape[0], 0)
     graph_ax.set_aspect("equal")
     graph_ax.set_title("Region graph", fontsize=5.2, color=INK, pad=1.5, fontweight="semibold")
-    rows, cols = 7, 9
-    for row in range(rows):
-        for col in range(cols):
-            index = row * cols + col
-            if col + 1 < cols:
-                graph_ax.plot([centers[index, 1], centers[index + 1, 1]], [centers[index, 0], centers[index + 1, 0]], color="#C8B897", lw=0.45)
-            if row + 1 < rows:
-                graph_ax.plot([centers[index, 1], centers[index + cols, 1]], [centers[index, 0], centers[index + cols, 0]], color="#C8B897", lw=0.45)
-    graph_ax.scatter(centers[:, 1], centers[:, 0], c=region_p, cmap="Blues", vmin=0, vmax=1, s=13, edgecolor=INK, linewidth=0.25)
+    stride = max(1, int(np.ceil(len(edges) / 2400)))
+    for edge_index in range(0, len(edges), stride):
+        first, second = edges[edge_index]
+        graph_ax.plot(
+            [centers[first, 1], centers[second, 1]],
+            [centers[first, 0], centers[second, 0]],
+            color="#C8B897",
+            lw=0.15 + 0.35 * float(affinities[edge_index]),
+            alpha=0.55,
+        )
+    node_size = 10 if len(centers) < 180 else 3.0
+    graph_ax.scatter(
+        centers[:, 1],
+        centers[:, 0],
+        c=region_p,
+        cmap="Blues",
+        vmin=0,
+        vmax=1,
+        s=node_size,
+        edgecolor=INK,
+        linewidth=0.12,
+    )
 
     box(ax, x0 + 0.310, 0.633, 0.074, 0.202, face=WHITE, edge="#C7B988")
     label(ax, x0 + 0.347, 0.810, r"anchors $t_i$", size=7.4, weight="bold")
@@ -469,33 +640,74 @@ def draw_panel_b(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> 
     adj_ax.set_ylim(demo["p"].shape[0], 0)
     adj_ax.set_aspect("equal")
     adj_ax.set_title("Region adjacency", fontsize=5.2, color=INK, pad=1.5, fontweight="semibold")
-    selected_ids = [20, 21, 22, 29, 30, 31, 38, 39, 40]
-    for first, second in ((20, 21), (21, 22), (20, 29), (21, 30), (22, 31), (29, 30), (30, 31), (29, 38), (30, 39), (31, 40), (38, 39), (39, 40)):
-        adj_ax.plot([centers[first, 1], centers[second, 1]], [centers[first, 0], centers[second, 0]], color=GREEN, lw=1.0)
-    adj_ax.scatter(centers[selected_ids, 1], centers[selected_ids, 0], s=18, c=YELLOW, edgecolor=INK, linewidth=0.35)
+    neighbors: list[set[int]] = [set() for _ in range(len(centers))]
+    for first, second in edges:
+        neighbors[int(first)].add(int(second))
+        neighbors[int(second)].add(int(first))
+    seed = int(np.argmax(region_u))
+    selected_set = {seed, *neighbors[seed]}
+    frontier = list(selected_set)
+    while len(selected_set) < 8 and frontier:
+        current = frontier.pop(0)
+        for neighbor in neighbors[current]:
+            if neighbor not in selected_set:
+                selected_set.add(neighbor)
+                frontier.append(neighbor)
+            if len(selected_set) >= 16:
+                break
+    selected_ids = np.asarray(sorted(selected_set)[:16], dtype=np.int64)
+    selected_lookup = set(int(value) for value in selected_ids)
+    for edge_index, (first, second) in enumerate(edges):
+        if int(first) not in selected_lookup or int(second) not in selected_lookup:
+            continue
+        adj_ax.plot(
+            [centers[first, 1], centers[second, 1]],
+            [centers[first, 0], centers[second, 0]],
+            color=GREEN,
+            lw=0.35 + 1.8 * float(affinities[edge_index]),
+            alpha=0.85,
+        )
+    adj_ax.scatter(
+        centers[selected_ids, 1],
+        centers[selected_ids, 0],
+        s=18,
+        c=region_u[selected_ids],
+        cmap="magma",
+        vmin=0,
+        vmax=1,
+        edgecolor=INK,
+        linewidth=0.35,
+    )
+    if selected_ids.size:
+        y_values = centers[selected_ids, 0]
+        x_values = centers[selected_ids, 1]
+        y_pad = max(5.0, 0.22 * max(float(np.ptp(y_values)), 1.0))
+        x_pad = max(5.0, 0.22 * max(float(np.ptp(x_values)), 1.0))
+        adj_ax.set_xlim(max(0.0, float(x_values.min() - x_pad)), min(demo["p"].shape[1], float(x_values.max() + x_pad)))
+        adj_ax.set_ylim(min(demo["p"].shape[0], float(y_values.max() + y_pad)), max(0.0, float(y_values.min() - y_pad)))
 
-    box(ax, x0 + 0.240, 0.275, 0.067, 0.155, face=WHITE, edge="#AFC6B5")
-    label(ax, x0 + 0.2735, 0.404, r"Affinity $w_{ij}$", size=6.8, weight="bold")
+    box(ax, x0 + 0.236, 0.275, 0.058, 0.155, face=WHITE, edge="#AFC6B5")
+    label(ax, x0 + 0.265, 0.404, r"Affinity $w_{ij}$", size=5.6, weight="bold")
     for y, line_width, text in ((0.365, 2.4, "strong"), (0.312, 0.6, "weak")):
-        ax.scatter([x0 + 0.254, x0 + 0.276], [y, y], s=24, c=[GREEN, GREEN], edgecolors=INK, linewidths=0.35, zorder=5)
-        ax.plot([x0 + 0.256, x0 + 0.274], [y, y], color=GREEN, lw=line_width, zorder=4)
-        label(ax, x0 + 0.285, y, text, size=5.6, ha="left")
-    label(ax, x0 + 0.2735, 0.286, r"$L=D-W$", size=8.4, weight="bold")
+        ax.scatter([x0 + 0.248, x0 + 0.268], [y, y], s=20, c=[GREEN, GREEN], edgecolors=INK, linewidths=0.35, zorder=5)
+        ax.plot([x0 + 0.250, x0 + 0.266], [y, y], color=GREEN, lw=line_width, zorder=4)
+        label(ax, x0 + 0.275, y, text, size=5.0, ha="left")
+    label(ax, x0 + 0.268, 0.286, r"$L=D-W$", size=7.8, weight="bold")
 
-    box(ax, x0 + 0.306, 0.307, 0.078, 0.114, face="#FFF4D7", edge=YELLOW)
-    label(ax, x0 + 0.345, 0.398, "Sparse SPD solve", size=6.6, weight="bold")
-    label(ax, x0 + 0.345, 0.369, r"$H=A+\lambda L+\delta I$", size=5.8)
-    label(ax, x0 + 0.345, 0.346, r"$Hq^*=At$", size=6.0, weight="bold")
-    label(ax, x0 + 0.345, 0.322, "unique | no learning", size=5.4, color=MUTED)
-    arrow(ax, (x0 + 0.306, 0.736), (x0 + 0.343, 0.424), color=CORAL, connection="arc3,rad=0.18")
-    arrow(ax, (x0 + 0.306, 0.347), (x0 + 0.308, 0.360), color=GREEN)
+    box(ax, x0 + 0.310, 0.307, 0.072, 0.114, face="#FFF4D7", edge=YELLOW)
+    label(ax, x0 + 0.346, 0.398, "Sparse SPD", size=5.8, weight="bold")
+    label(ax, x0 + 0.346, 0.369, r"$H=A+\lambda L+\delta I$", size=5.5)
+    label(ax, x0 + 0.346, 0.346, r"$Hq^*=At$", size=5.8, weight="bold")
+    label(ax, x0 + 0.346, 0.322, "unique | no learning", size=5.1, color=MUTED)
+    arrow(ax, (x0 + 0.306, 0.736), (x0 + 0.346, 0.424), color=CORAL, connection="arc3,rad=0.18")
+    arrow(ax, (x0 + 0.298, 0.347), (x0 + 0.311, 0.360), color=GREEN)
 
-    q_ax = show_map(fig, (x0 + 0.300, 0.112, 0.078, 0.145), demo["r"], cmap="Blues", title="Regional $q^*$")
+    q_ax = show_map(fig, (x0 + 0.306, 0.112, 0.072, 0.145), demo["r"], cmap="Blues", title="Regional $q^*$")
     q_ax.contour(demo["r"], levels=[0.5], colors=[CORAL], linewidths=0.8)
     arrow(ax, (x0 + 0.349, 0.306), (x0 + 0.339, 0.258), color=PURPLE)
 
 
-def draw_panel_c(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> None:
+def draw_panel_c(fig: plt.Figure, ax: plt.Axes, demo: dict[str, Any]) -> None:
     x0, x1 = 0.754, 0.988
     box(ax, x0, 0.075, x1 - x0, 0.875, face="#F8F5FA", edge="#CFC5D8", radius=0.012)
     section_title(
@@ -557,7 +769,7 @@ def draw_panel_c(fig: plt.Figure, ax: plt.Axes, demo: dict[str, np.ndarray]) -> 
     label(ax, x0 + 0.117, 0.118, r"$|\hat p(x)-p(x)|\leq u(x)^\beta$", size=6.4, weight="bold")
 
 
-def build_figure() -> plt.Figure:
+def build_figure(sample: dict[str, Any]) -> plt.Figure:
     plt.rcParams.update(
         {
             "font.family": "DejaVu Sans",
@@ -577,10 +789,9 @@ def build_figure() -> plt.Figure:
     ax.set_ylim(0, 1)
     ax.axis("off")
 
-    demo = build_demo()
-    draw_panel_a(fig, ax, demo)
-    draw_panel_b(fig, ax, demo)
-    draw_panel_c(fig, ax, demo)
+    draw_panel_a(fig, ax, sample)
+    draw_panel_b(fig, ax, sample)
+    draw_panel_c(fig, ax, sample)
 
     box(ax, 0.015, 0.018, 0.973, 0.040, face=INK, edge=INK, radius=0.008)
     footer = "OUTPUT ONLY   |   NO INTERNAL FEATURES   |   NO GRADIENTS   |   NO LEARNED MASK DECODER"
@@ -603,7 +814,8 @@ def main() -> int:
     args = parse_args()
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    fig = build_figure()
+    sample = build_demo() if args.demo else load_sample_bundle(args.sample_bundle)
+    fig = build_figure(sample)
     outputs = []
     for suffix in ("pdf", "svg", "png"):
         output = output_dir / f"{args.stem}.{suffix}"
@@ -638,7 +850,7 @@ def main() -> int:
     plt.close(fig)
     component_outputs = save_component_images(
         output_dir / f"{args.stem}_components",
-        build_demo(),
+        sample,
     )
     outputs.extend(component_outputs)
     for output in outputs:
