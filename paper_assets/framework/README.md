@@ -61,7 +61,9 @@ Important files:
 - `freeref_framework_real.pdf`: paper-ready vector figure;
 - `freeref_framework_real.svg`: editable vector figure;
 - `freeref_framework_real.png`: 300-DPI preview;
-- `freeref_framework_real_components/`: individual real image/map assets.
+- `freeref_framework_real_components/`: individual real image/map assets,
+  including the input image, GT mask, baseline mask, FreeRef mask, and their
+  colored overlays.
 
 ## Select a different real example
 

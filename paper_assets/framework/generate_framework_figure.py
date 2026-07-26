@@ -496,8 +496,23 @@ def save_component_images(
     changes[(~base_mask) & final_mask] = np.array(colors.to_rgb(GREEN))
     changes[base_mask & (~final_mask)] = np.array(colors.to_rgb(CORAL))
 
+    def overlay_mask(mask: np.ndarray, color: str, alpha: float = 0.48) -> np.ndarray:
+        result = demo["scene"].copy()
+        selected = np.asarray(mask, dtype=bool)
+        overlay_color = np.asarray(colors.to_rgb(color), dtype=float)
+        result[selected] = (
+            (1.0 - alpha) * result[selected] + alpha * overlay_color
+        )
+        return np.clip(result, 0.0, 1.0)
+
     components: tuple[tuple[str, np.ndarray, str | None], ...] = (
         ("input_scene.png", demo["scene"], None),
+        ("ground_truth_mask.png", demo["target"], "gray"),
+        ("baseline_segmentation_mask.png", base_mask.astype(float), "gray"),
+        ("freeref_segmentation_mask.png", final_mask.astype(float), "gray"),
+        ("ground_truth_overlay.png", overlay_mask(demo["target"] >= 0.5, GREEN), None),
+        ("baseline_segmentation_overlay.png", overlay_mask(base_mask, CORAL), None),
+        ("freeref_segmentation_overlay.png", overlay_mask(final_mask, BLUE), None),
         ("soft_probability.png", demo["p"], PROBABILITY_CMAP),
         ("soft_intervention.png", demo["u"], "magma"),
         ("hard_mask.png", demo["hard"], "gray"),

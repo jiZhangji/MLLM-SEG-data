@@ -155,6 +155,17 @@ class RealFrameworkFigureTests(unittest.TestCase):
             self.assertTrue(preview.exists())
             self.assertTrue((output_dir / "real_test.pdf").exists())
             self.assertTrue((output_dir / "real_test.svg").exists())
+            components = output_dir / "real_test_components"
+            for filename in (
+                "input_scene.png",
+                "ground_truth_mask.png",
+                "baseline_segmentation_mask.png",
+                "freeref_segmentation_mask.png",
+                "ground_truth_overlay.png",
+                "baseline_segmentation_overlay.png",
+                "freeref_segmentation_overlay.png",
+            ):
+                self.assertTrue((components / filename).exists(), filename)
             with Image.open(preview) as rendered:
                 self.assertGreater(rendered.width, 500)
                 self.assertGreater(rendered.height, 250)
