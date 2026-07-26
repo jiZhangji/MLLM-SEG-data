@@ -11,7 +11,9 @@ CONDA_BIN="${CONDA_BIN:-conda}"
 WEIGHTS_ROOT="${RELA_WEIGHTS_ROOT:-${ROOT}/models/freeref_missing_methods}"
 SWIN_PTH="${RELA_SWIN_PTH:-${WEIGHTS_ROOT}/rela/swin_base_patch4_window12_384_22k.pth}"
 SWIN_D2="${RELA_SWIN_D2:-${WEIGHTS_ROOT}/rela/swin_base_patch4_window12_384_22k.pkl}"
-READY_MARKER="${ROOT}/.cache/rela-freeref-env-v2.ready"
+HOST_TAG="${FREEREF_HOST_TAG:-$(hostname)}"
+HOST_TAG="${HOST_TAG//[^A-Za-z0-9_.-]/_}"
+READY_MARKER="${ROOT}/.cache/rela-freeref-env-v2.${HOST_TAG}.ready"
 
 METHODS=rela ROOT="${ROOT}" TARGET_ROOT="${ROOT}/code/third_party" \
   bash "${SCRIPT_DIR}/prepare_universal_freeref_repos.sh"

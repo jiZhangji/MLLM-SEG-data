@@ -7,6 +7,8 @@ OUTPUT_ROOT="${RELA_FULL_OUTPUT_ROOT:-${ROOT}/outputs/rela_freeref_full}"
 LOG_ROOT="${RELA_FULL_LOG_ROOT:-${ROOT}/outputs/rela_freeref_full_logs}"
 CUDA_DEVICES="${RELA_EVAL_CUDA_DEVICES:-0 1 2 3}"
 SPLIT_SPECS="${RELA_SPLIT_SPECS:-refcoco|val refcoco|testA refcoco|testB refcoco+|val refcoco+|testA refcoco+|testB refcocog|val refcocog|test}"
+FINALIZE_FULL="${RELA_FINALIZE_FULL:-1}"
+FINALIZE_ONLY="${RELA_FINALIZE_ONLY:-0}"
 read -r -a GPU_ARRAY <<<"${CUDA_DEVICES}"
 (( ${#GPU_ARRAY[@]} > 0 )) || { echo "ERROR: RELA_EVAL_CUDA_DEVICES is empty." >&2; exit 2; }
 mkdir -p "${OUTPUT_ROOT}" "${LOG_ROOT}"
@@ -43,19 +45,25 @@ wait_batch() {
   ACTIVE_PIDS=(); ACTIVE_NAMES=(); ACTIVE_LOGS=()
 }
 
-index=0
-for spec in ${SPLIT_SPECS}; do
-  gpu="${GPU_ARRAY[$((index % ${#GPU_ARRAY[@]}))]}"
-  slug="${spec//+/plus}"
-  slug="${slug//|/_}"
-  log="${LOG_ROOT}/${slug}.log"
-  run_split "${spec}" "${gpu}" >"${log}" 2>&1 &
-  ACTIVE_PIDS+=("$!"); ACTIVE_NAMES+=("${spec}"); ACTIVE_LOGS+=("${log}")
-  index=$((index + 1))
-  if (( ${#ACTIVE_PIDS[@]} >= ${#GPU_ARRAY[@]} )); then wait_batch; fi
-done
-if (( ${#ACTIVE_PIDS[@]} > 0 )); then wait_batch; fi
-(( failed == 0 )) || exit 1
+if [[ "${FINALIZE_ONLY}" != 1 ]]; then
+  index=0
+  for spec in ${SPLIT_SPECS}; do
+    gpu="${GPU_ARRAY[$((index % ${#GPU_ARRAY[@]}))]}"
+    slug="${spec//+/plus}"
+    slug="${slug//|/_}"
+    log="${LOG_ROOT}/${slug}.log"
+    run_split "${spec}" "${gpu}" >"${log}" 2>&1 &
+    ACTIVE_PIDS+=("$!"); ACTIVE_NAMES+=("${spec}"); ACTIVE_LOGS+=("${log}")
+    index=$((index + 1))
+    if (( ${#ACTIVE_PIDS[@]} >= ${#GPU_ARRAY[@]} )); then wait_batch; fi
+  done
+  if (( ${#ACTIVE_PIDS[@]} > 0 )); then wait_batch; fi
+  (( failed == 0 )) || exit 1
+  if [[ "${FINALIZE_FULL}" != 1 ]]; then
+    echo "ReLA assigned split evaluation complete; shared full-suite finalization deferred."
+    exit 0
+  fi
+fi
 
 summary_args=()
 table_args=()

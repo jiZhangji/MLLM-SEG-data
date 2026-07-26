@@ -16,6 +16,20 @@ while IFS=',' read -r index name; do
     *H100*) H100_GPUS+=("${index}") ;;
   esac
 done < <(nvidia-smi --query-gpu=index,name --format=csv,noheader)
+if (( ${#H100_GPUS[@]} >= 2 && ${#H200_GPUS[@]} == 0 )); then
+  echo "Detected a two-H100 instance; delegating to the split-instance scheduler."
+  exec env REMAINING_SIX_INSTANCE_ROLE=h100 \
+    MLLM_SEG_ROOT="${ROOT}" REMAINING_SIX_PHASE="${PHASE}" \
+    REMAINING_SIX_RUN_ROOT="${REMAINING_SIX_RUN_ROOT:-${ROOT}/outputs/remaining_six_instances}" \
+    bash "${SCRIPT_DIR}/run_remaining_six_experiments_instance.sh"
+fi
+if (( ${#H200_GPUS[@]} >= 2 && ${#H100_GPUS[@]} == 0 )); then
+  echo "Detected a two-H200 instance; delegating to the split-instance scheduler."
+  exec env REMAINING_SIX_INSTANCE_ROLE=h200 \
+    MLLM_SEG_ROOT="${ROOT}" REMAINING_SIX_PHASE="${PHASE}" \
+    REMAINING_SIX_RUN_ROOT="${REMAINING_SIX_RUN_ROOT:-${ROOT}/outputs/remaining_six_instances}" \
+    bash "${SCRIPT_DIR}/run_remaining_six_experiments_instance.sh"
+fi
 if (( ${#H100_GPUS[@]} < 2 || ${#H200_GPUS[@]} < 2 )); then
   echo "ERROR: expected at least two H100 and two H200 GPUs." >&2
   nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader >&2

@@ -7,7 +7,9 @@ READ_DIR="${READ_DIR:-${ROOT}/code/third_party/read}"
 READ_REVISION="${READ_REVISION:-254924020ec4d33ace8575eb1e2a515390530594}"
 CONDA_ENV="${READ_CONDA_ENV:-read-freeref}"
 CONDA_BIN="${CONDA_BIN:-conda}"
-READY_MARKER="${ROOT}/.cache/read-freeref-env-v1.ready"
+HOST_TAG="${FREEREF_HOST_TAG:-$(hostname)}"
+HOST_TAG="${HOST_TAG//[^A-Za-z0-9_.-]/_}"
+READY_MARKER="${ROOT}/.cache/read-freeref-env-v1.${HOST_TAG}.ready"
 
 METHODS=read ROOT="${ROOT}" TARGET_ROOT="${ROOT}/code/third_party" \
   bash "${SCRIPT_DIR}/prepare_universal_freeref_repos.sh"

@@ -7,7 +7,9 @@ GSVA_DIR="${GSVA_DIR:-${ROOT}/code/third_party/gsva}"
 GSVA_REVISION="${GSVA_REVISION:-618dc7957cd239442d1ecd45c8d575cf91b9ca8e}"
 CONDA_ENV="${GSVA_CONDA_ENV:-gsva-freeref}"
 CONDA_BIN="${CONDA_BIN:-conda}"
-READY_MARKER="${ROOT}/.cache/gsva-freeref-env-v1.ready"
+HOST_TAG="${FREEREF_HOST_TAG:-$(hostname)}"
+HOST_TAG="${HOST_TAG//[^A-Za-z0-9_.-]/_}"
+READY_MARKER="${ROOT}/.cache/gsva-freeref-env-v1.${HOST_TAG}.ready"
 
 METHODS=gsva ROOT="${ROOT}" TARGET_ROOT="${ROOT}/code/third_party" \
   bash "${SCRIPT_DIR}/prepare_universal_freeref_repos.sh"

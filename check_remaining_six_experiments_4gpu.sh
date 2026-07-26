@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="${MLLM_SEG_ROOT:-/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/lihao/lh/or/MLLM-SEG}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo "===== Instance ====="
+echo "host=$(hostname)"
 echo "===== GPUs ====="
 nvidia-smi --query-gpu=index,name,memory.used,memory.free,utilization.gpu --format=csv,noheader
 echo "===== Active remaining-six processes ====="

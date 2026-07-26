@@ -6,6 +6,7 @@ PREPARE = ROOT / "prepare_remaining_six_assets.sh"
 CHECK = ROOT / "check_remaining_six_assets.sh"
 POLYFORMER_FULL = ROOT / "run_polyformer_freeref_full_eval.sh"
 READY_RUNNER = ROOT / "run_ready_remaining_models_4gpu.sh"
+INSTANCE_RUNNER = ROOT / "run_remaining_six_experiments_instance.sh"
 
 
 def test_asset_entrypoint_uses_official_repo_and_weight_preparation() -> None:
@@ -70,3 +71,37 @@ def test_complete_four_gpu_runner_covers_ready_and_rela_phases() -> None:
         assert runner in text
     assert "UNINEXT-L remains gated" in text
     assert "rela-train" in text and "rela-eval" in text
+    assert "run_remaining_six_experiments_instance.sh" in text
+    assert "REMAINING_SIX_INSTANCE_ROLE=h100" in text
+    assert "REMAINING_SIX_INSTANCE_ROLE=h200" in text
+
+
+def test_two_instance_runner_assigns_models_and_rela_without_cross_node_nccl() -> None:
+    text = INSTANCE_RUNNER.read_text(encoding="utf-8")
+    assert "PolyFormer-L -> ${GPU0}; LISA diagnostic -> ${GPU1}" in text
+    assert "READ -> ${GPU0}; GSVA -> ${GPU1}" in text
+    assert "RefCOCO+ -> ${GPU0},${GPU1}" in text
+    assert "RefCOCO -> ${GPU0}; RefCOCOg -> ${GPU1}" in text
+    assert 'specs="refcoco+|val refcoco+|testA refcoco+|testB"' in text
+    assert "RELA_FINALIZE_FULL=0" in text
+    assert "RELA_FINALIZE_ONLY=1" in text
+    assert "torchrun" not in text
+
+
+def test_runtime_preparation_is_role_scoped_for_two_instances() -> None:
+    text = (ROOT / "prepare_remaining_six_runtimes.sh").read_text(encoding="utf-8")
+    assert "REMAINING_SIX_INSTANCE_ROLE" in text
+    assert "h100)" in text and "h200)" in text
+    assert "prepare_polyformer_freeref_assets.sh" in text
+    assert "prepare_read_freeref_assets.sh" in text
+
+
+def test_node_local_runtime_markers_include_the_hostname() -> None:
+    for filename in (
+        "prepare_read_freeref_env.sh",
+        "prepare_gsva_freeref_env.sh",
+        "prepare_rela_freeref_env.sh",
+    ):
+        text = (ROOT / filename).read_text(encoding="utf-8")
+        assert 'HOST_TAG="${FREEREF_HOST_TAG:-$(hostname)}"' in text
+        assert "${HOST_TAG}.ready" in text
