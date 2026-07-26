@@ -26,6 +26,7 @@ YELLOW = "#E6B84A"
 CORAL = "#DC6B52"
 PURPLE = "#7965A8"
 WHITE = "#FFFFFF"
+PROBABILITY_CMAP = "viridis"
 
 
 def parse_args() -> argparse.Namespace:
@@ -497,15 +498,15 @@ def save_component_images(
 
     components: tuple[tuple[str, np.ndarray, str | None], ...] = (
         ("input_scene.png", demo["scene"], None),
-        ("soft_probability.png", demo["p"], "Blues"),
+        ("soft_probability.png", demo["p"], PROBABILITY_CMAP),
         ("soft_intervention.png", demo["u"], "magma"),
         ("hard_mask.png", demo["hard"], "gray"),
         ("boundary_permission.png", demo["u_hard"], "magma"),
-        ("regional_probability.png", pooled_p, "Blues"),
+        ("regional_probability.png", pooled_p, PROBABILITY_CMAP),
         ("regional_intervention.png", pooled_u, "magma"),
         ("slic_superpixels.png", slic_scene, None),
-        ("regional_field.png", demo["r"], "Blues"),
-        ("refined_probability.png", demo["refined"], "Blues"),
+        ("regional_field.png", demo["r"], PROBABILITY_CMAP),
+        ("refined_probability.png", demo["refined"], PROBABILITY_CMAP),
         ("changed_pixels.png", changes, None),
     )
     outputs: list[Path] = []
@@ -546,7 +547,7 @@ def draw_panel_a(fig: plt.Figure, ax: plt.Axes, demo: dict[str, Any]) -> None:
     arrow(ax, (x0 + 0.0705, 0.389), (x0 + 0.0705, 0.340))
 
     label(ax, x0 + 0.210, 0.855, "Soft probability", size=8.5, weight="bold")
-    show_map(fig, (x0 + 0.142, 0.665, 0.092, 0.145), demo["p"], cmap="Blues", title="$p$")
+    show_map(fig, (x0 + 0.142, 0.665, 0.092, 0.145), demo["p"], cmap=PROBABILITY_CMAP, title="$p$")
     show_map(fig, (x0 + 0.244, 0.665, 0.092, 0.145), demo["u"], cmap="magma", title="Intervention field  $u$")
     label(ax, x0 + 0.290, 0.642, r"$u=1-|2p-1|$", size=7.3)
 
@@ -582,7 +583,7 @@ def draw_panel_b(fig: plt.Figure, ax: plt.Axes, demo: dict[str, Any]) -> None:
     pooled_u, region_u = pool_regions(demo["u"], labels_map, len(centers))
     affinities = region_affinities(demo["scene"], labels_map, edges)
 
-    show_map(fig, (x0 + 0.018, 0.670, 0.092, 0.145), pooled_p, cmap="Blues", title="Regional $\\bar p$")
+    show_map(fig, (x0 + 0.018, 0.670, 0.092, 0.145), pooled_p, cmap=PROBABILITY_CMAP, title="Regional $\\bar p$")
     show_map(fig, (x0 + 0.118, 0.670, 0.092, 0.145), pooled_u, cmap="magma", title="Regional $\\bar u$")
 
     graph_ax = inset(fig, (x0 + 0.218, 0.650, 0.092, 0.175))
@@ -605,7 +606,7 @@ def draw_panel_b(fig: plt.Figure, ax: plt.Axes, demo: dict[str, Any]) -> None:
         centers[:, 1],
         centers[:, 0],
         c=region_p,
-        cmap="Blues",
+        cmap=PROBABILITY_CMAP,
         vmin=0,
         vmax=1,
         s=node_size,
@@ -702,7 +703,7 @@ def draw_panel_b(fig: plt.Figure, ax: plt.Axes, demo: dict[str, Any]) -> None:
     arrow(ax, (x0 + 0.306, 0.736), (x0 + 0.346, 0.424), color=CORAL, connection="arc3,rad=0.18")
     arrow(ax, (x0 + 0.298, 0.347), (x0 + 0.311, 0.360), color=GREEN)
 
-    q_ax = show_map(fig, (x0 + 0.306, 0.112, 0.072, 0.145), demo["r"], cmap="Blues", title="Regional $q^*$")
+    q_ax = show_map(fig, (x0 + 0.306, 0.112, 0.072, 0.145), demo["r"], cmap=PROBABILITY_CMAP, title="Regional $q^*$")
     q_ax.contour(demo["r"], levels=[0.5], colors=[CORAL], linewidths=0.8)
     arrow(ax, (x0 + 0.349, 0.306), (x0 + 0.339, 0.258), color=PURPLE)
 
@@ -719,9 +720,9 @@ def draw_panel_c(fig: plt.Figure, ax: plt.Axes, demo: dict[str, Any]) -> None:
         size=8.8,
     )
 
-    show_map(fig, (x0 + 0.014, 0.680, 0.064, 0.130), demo["p"], cmap="Blues", title="Original $p$")
+    show_map(fig, (x0 + 0.014, 0.680, 0.064, 0.130), demo["p"], cmap=PROBABILITY_CMAP, title="Original $p$")
     show_map(fig, (x0 + 0.086, 0.680, 0.064, 0.130), demo["u"], cmap="magma", title="Gate $u$")
-    show_map(fig, (x0 + 0.158, 0.680, 0.064, 0.130), demo["r"], cmap="Blues", title="Lifted $r$")
+    show_map(fig, (x0 + 0.158, 0.680, 0.064, 0.130), demo["r"], cmap=PROBABILITY_CMAP, title="Lifted $r$")
     arrow(ax, (x0 + 0.078, 0.745), (x0 + 0.084, 0.745), color=PURPLE)
     arrow(ax, (x0 + 0.150, 0.745), (x0 + 0.156, 0.745), color=PURPLE)
 
