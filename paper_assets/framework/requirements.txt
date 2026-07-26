@@ -4,4 +4,5 @@ Pillow>=9.5
 scipy>=1.10
 scikit-image>=0.20
 tqdm>=4.65
+huggingface-hub>=0.23
 # PyTorch is supplied by the existing STAMP conda environment.

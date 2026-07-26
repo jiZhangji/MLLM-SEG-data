@@ -39,6 +39,9 @@ SELECTION="${FRAMEWORK_SELECTION:-representative_success}"
 RANK="${FRAMEWORK_SAMPLE_RANK:-1}"
 CANDIDATE_POOL="${FRAMEWORK_CANDIDATE_POOL:-16}"
 SAMPLE_NAME="${FRAMEWORK_SAMPLE_NAME:-}"
+UPLOAD_HF="${FRAMEWORK_UPLOAD_HF:-0}"
+HF_REPO_ID="${FRAMEWORK_HF_REPO_ID:-shimiandeshu/MLLM-SEG}"
+HF_PATH="${FRAMEWORK_HF_PATH:-paper_assets/framework_runs/${KIND}}"
 
 if [[ ! -f "${ROWS}" ]]; then
   echo "ERROR: evaluation CSV not found: ${ROWS}" >&2
@@ -51,6 +54,10 @@ export PYTHONPATH="${REPO}:${PYTHONPATH:-}"
 
 "${PYTHON_BIN}" -c \
   'import matplotlib, numpy, PIL, scipy, skimage, torch; print("Runtime imports: OK")'
+if [[ "${UPLOAD_HF}" == "1" ]]; then
+  "${PYTHON_BIN}" -c \
+    'from huggingface_hub import HfApi; print("Hugging Face account:", HfApi().whoami()["name"])'
+fi
 
 selector=(
   "${PYTHON_BIN}"
@@ -83,3 +90,15 @@ echo "Selection record: ${OUTPUT_DIR}/selected_real_sample.json"
 echo "Paper PDF:       ${OUTPUT_DIR}/freeref_framework_real.pdf"
 echo "Paper PNG:       ${OUTPUT_DIR}/freeref_framework_real.png"
 echo "Editable SVG:    ${OUTPUT_DIR}/freeref_framework_real.svg"
+
+if [[ "${UPLOAD_HF}" == "1" ]]; then
+  echo
+  echo "[HF] Uploading viewable outputs to ${HF_REPO_ID}/${HF_PATH}"
+  "${PYTHON_BIN}" paper_assets/framework/upload_framework_outputs.py \
+    --output-dir "${OUTPUT_DIR}" \
+    --repo-id "${HF_REPO_ID}" \
+    --path-in-repo "${HF_PATH}"
+else
+  echo
+  echo "HF upload skipped. Set FRAMEWORK_UPLOAD_HF=1 to upload viewable outputs."
+fi

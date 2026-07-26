@@ -22,6 +22,24 @@ conda activate STAMP
 bash paper_assets/framework/run_real_framework_figure.sh
 ```
 
+Generate and upload the viewable outputs to the existing Hugging Face repo:
+
+```bash
+FRAMEWORK_UPLOAD_HF=1 \
+bash paper_assets/framework/run_real_framework_figure.sh
+```
+
+The default upload target is:
+
+```text
+https://huggingface.co/shimiandeshu/MLLM-SEG/tree/main/paper_assets/framework_runs/stamp
+```
+
+Only the PNG/PDF/SVG, candidate sheet, metrics/manifest, and component PNGs are
+uploaded. The larger `selected_real_sample.npz` is intentionally excluded.
+Override the destination with `FRAMEWORK_HF_REPO_ID` and
+`FRAMEWORK_HF_PATH`.
+
 The default source is the real STAMP-7B RefCOCOg validation run:
 
 ```text
@@ -78,6 +96,22 @@ bash paper_assets/framework/run_real_framework_figure.sh
 
 Paths can be overridden with `FRAMEWORK_ROWS`, `FRAMEWORK_OUTPUT_DIR`,
 `FRAMEWORK_PYTHON`, and `FRAMEWORK_CANDIDATE_POOL`.
+
+## Download for local inspection
+
+Open the PNG directly:
+
+```text
+https://huggingface.co/shimiandeshu/MLLM-SEG/resolve/main/paper_assets/framework_runs/stamp/freeref_framework_real.png
+```
+
+Or download all viewable files locally:
+
+```bash
+hf download shimiandeshu/MLLM-SEG \
+  --include "paper_assets/framework_runs/stamp/*" \
+  --local-dir ./freeref_framework_from_server
+```
 
 ## Renderer-only command
 
