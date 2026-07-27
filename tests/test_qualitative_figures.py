@@ -16,6 +16,7 @@ from paper_assets.qualitative_comparison.generate_qualitative_figures import (
     mask_overlay,
     postprocess_score,
     save_binary_zoom_grid,
+    save_binary_masks,
     save_grid,
     save_grid_pages,
 )
@@ -112,6 +113,19 @@ class QualitativeFigureTests(unittest.TestCase):
             with Image.open(stem.with_suffix(".png")) as rendered:
                 self.assertGreater(rendered.width, 900)
                 self.assertGreater(rendered.height, 200)
+
+    def test_binary_mask_export_is_single_channel_and_exact(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            mask = np.zeros((31, 47), dtype=bool)
+            mask[5:24, 11:39] = True
+            save_binary_masks(root, "17", ["prediction"], [mask])
+            path = root / "sample_000017" / "prediction.png"
+            with Image.open(path) as exported:
+                self.assertEqual(exported.mode, "L")
+                values = np.asarray(exported)
+            self.assertEqual(set(np.unique(values).tolist()), {0, 255})
+            self.assertTrue(np.array_equal(values == 255, mask))
 
     def test_grid_exports_png_pdf_and_svg(self):
         with TemporaryDirectory() as temporary_directory:

@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-pool", type=int, default=96)
     parser.add_argument(
         "--render-style",
-        choices=("overlay", "binary_zoom", "both"),
+        choices=("overlay", "binary_zoom", "both", "masks_only"),
         default="overlay",
     )
     parser.add_argument(
@@ -452,6 +452,19 @@ def save_panels(root: Path, sample_id: str, names: list[str], panels: list[np.nd
         Image.fromarray(np.asarray(panel, dtype=np.uint8)).save(output / f"{name}.png")
 
 
+def save_binary_masks(
+    root: Path,
+    sample_id: str,
+    names: list[str],
+    masks: list[np.ndarray],
+) -> None:
+    output = root / f"sample_{int(sample_id):06d}"
+    output.mkdir(parents=True, exist_ok=True)
+    for name, mask in zip(names, masks):
+        value = np.asarray(mask, dtype=bool).astype(np.uint8) * 255
+        Image.fromarray(value, mode="L").save(output / f"{name}.png")
+
+
 def main_table_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     stamp_rows = read_csv(args.stamp_rows)
     text_rows = read_csv(args.text4seg_rows)
@@ -579,6 +592,13 @@ def main_table_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[s
         }
         records.append(record)
         save_panels(args.output_dir / "main_table_panels", sample.candidate.instance_id, panel_names, panels)
+        mask_names = ["ground_truth"] + panel_names[2:]
+        save_binary_masks(
+            args.output_dir / "main_table_binary_masks",
+            sample.candidate.instance_id,
+            mask_names,
+            [target] + [masks[name] for name in panel_names[2:]],
+        )
     return rows, records
 
 
@@ -725,6 +745,13 @@ def postprocess_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[
             }
         )
         save_panels(args.output_dir / "postprocess_panels", sample_id, titles, panels)
+        mask_names = ["ground_truth"] + titles[2:]
+        save_binary_masks(
+            args.output_dir / "postprocess_binary_masks",
+            sample_id,
+            mask_names,
+            [target] + [masks[name] for name in titles[2:]],
+        )
     return rows, records
 
 

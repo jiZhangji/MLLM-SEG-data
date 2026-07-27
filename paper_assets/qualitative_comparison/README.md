@@ -115,3 +115,10 @@ bash paper_assets/qualitative_comparison/run_qualitative_figures.sh
 The crop is selected where FreeRef corrects the most base-model errors near the
 ground-truth boundary. All methods use exactly the same crop coordinates, and
 mask panels contain only pixel values 0 and 255.
+
+Every run also exports exact single-channel binary masks under
+`main_table_binary_masks/` and `postprocess_binary_masks/`. Use
+`QUALITATIVE_RENDER_STYLE=masks_only` to regenerate these masks from saved
+sample IDs without writing composite figures. Each PNG is mode `L` and contains
+only values 0 and 255; masks are exported directly from the evaluated arrays,
+not reconstructed from visualization overlays.
