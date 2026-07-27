@@ -13,6 +13,7 @@ from paper_assets.qualitative_comparison.generate_qualitative_figures import (
     mask_overlay,
     postprocess_score,
     save_grid,
+    save_grid_pages,
 )
 
 
@@ -59,6 +60,26 @@ class QualitativeFigureTests(unittest.TestCase):
             with Image.open(stem.with_suffix(".png")) as image:
                 self.assertGreater(image.width, 900)
                 self.assertGreater(image.height, 150)
+
+    def test_large_candidate_sets_are_paginated(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            panel = np.full((48, 64, 3), 220, dtype=np.uint8)
+            rows = [
+                {"sample_id": str(index), "prompt": f"object {index}", "panels": [panel] * 8}
+                for index in range(5)
+            ]
+            pages = save_grid_pages(
+                rows,
+                [f"C{i}" for i in range(8)],
+                root / "comparison",
+                60,
+                {7},
+                rows_per_page=2,
+            )
+            self.assertEqual(len(pages), 3)
+            for index in range(1, 4):
+                self.assertTrue((root / f"comparison_page_{index:02d}.pdf").is_file())
 
 
 if __name__ == "__main__":

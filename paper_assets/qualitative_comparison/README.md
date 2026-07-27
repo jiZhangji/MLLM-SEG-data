@@ -65,3 +65,19 @@ bash paper_assets/qualitative_comparison/run_qualitative_figures.sh
 Prediction masks use one shared blue color, ground truth uses green, and
 FreeRef is emphasized only by its header and border. Sample-level IoU and bIoU
 are stored in the CSV files rather than printed over the images.
+
+For a larger candidate pool, figures are automatically paginated so that PDF
+pages and raster previews remain manageable:
+
+```bash
+QUALITATIVE_SAMPLE_COUNT=24 \
+QUALITATIVE_ROWS_PER_PAGE=4 \
+QUALITATIVE_CANDIDATE_POOL=512 \
+QUALITATIVE_DPI=180 \
+QUALITATIVE_OUTPUT_DIR="$ROOT/outputs/freeref_qualitative_candidates_n24" \
+MLLM_SEG_ROOT="$ROOT" \
+bash paper_assets/qualitative_comparison/run_qualitative_figures.sh
+```
+
+This produces six main-table pages, six post-processing pages, and all 384
+full-resolution independent panels.

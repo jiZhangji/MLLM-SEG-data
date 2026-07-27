@@ -62,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--postprocess-rows", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--sample-count", type=int, default=4)
+    parser.add_argument("--rows-per-page", type=int, default=4)
     parser.add_argument("--candidate-pool", type=int, default=96)
     parser.add_argument("--main-sample-id", action="append", default=[])
     parser.add_argument("--post-sample-id", action="append", default=[])
@@ -157,6 +158,29 @@ def save_grid(
             pad_inches=0.04,
         )
     plt.close(figure)
+
+
+def save_grid_pages(
+    rows: list[dict[str, Any]],
+    titles: list[str],
+    output_stem: Path,
+    dpi: int,
+    ours_columns: set[int],
+    rows_per_page: int,
+) -> list[str]:
+    pages: list[str] = []
+    page_count = (len(rows) + rows_per_page - 1) // rows_per_page
+    for page_index in range(page_count):
+        start = page_index * rows_per_page
+        chunk = rows[start : start + rows_per_page]
+        stem = (
+            output_stem
+            if page_count == 1
+            else output_stem.with_name(f"{output_stem.name}_page_{page_index + 1:02d}")
+        )
+        save_grid(chunk, titles, stem, dpi, ours_columns)
+        pages.append(str(stem))
+    return pages
 
 
 def save_panels(root: Path, sample_id: str, names: list[str], panels: list[np.ndarray]) -> None:
@@ -374,8 +398,15 @@ def flatten_records(records: list[dict[str, Any]], path: Path) -> None:
 
 def main() -> int:
     args = parse_args()
-    if args.sample_count <= 0 or args.candidate_pool <= 0 or args.dpi <= 0:
-        raise ValueError("sample-count, candidate-pool, and dpi must be positive.")
+    if (
+        args.sample_count <= 0
+        or args.rows_per_page <= 0
+        or args.candidate_pool <= 0
+        or args.dpi <= 0
+    ):
+        raise ValueError(
+            "sample-count, rows-per-page, candidate-pool, and dpi must be positive."
+        )
     for name in (
         "stamp_rows",
         "text4seg_rows",
@@ -402,12 +433,13 @@ def main() -> int:
         "PixelLM",
         "+FreeRef",
     ]
-    save_grid(
+    main_pages = save_grid_pages(
         main_rows,
         main_titles,
         args.output_dir / "main_table_qualitative",
         args.dpi,
         {3, 5, 7},
+        args.rows_per_page,
     )
     flatten_records(main_records, args.output_dir / "main_table_qualitative_rows.csv")
 
@@ -422,18 +454,21 @@ def main() -> int:
         "SLIC Avg.",
         "FreeRef",
     ]
-    save_grid(
+    post_pages = save_grid_pages(
         post_rows,
         post_titles,
         args.output_dir / "postprocess_qualitative",
         args.dpi,
         {7},
+        args.rows_per_page,
     )
     flatten_records(post_records, args.output_dir / "postprocess_qualitative_rows.csv")
 
     manifest = {
         "main_table": main_records,
         "postprocess": post_records,
+        "main_table_pages": main_pages,
+        "postprocess_pages": post_pages,
         "inputs": {
             "stamp_rows": str(args.stamp_rows),
             "text4seg_rows": str(args.text4seg_rows),
@@ -445,7 +480,18 @@ def main() -> int:
     (args.output_dir / "qualitative_manifest.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    print(json.dumps({"output_dir": str(args.output_dir), "main_samples": [r["sample_id"] for r in main_records], "postprocess_samples": [r["sample_id"] for r in post_records]}, indent=2))
+    print(
+        json.dumps(
+            {
+                "output_dir": str(args.output_dir),
+                "main_samples": [r["sample_id"] for r in main_records],
+                "postprocess_samples": [r["sample_id"] for r in post_records],
+                "main_pages": main_pages,
+                "postprocess_pages": post_pages,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 

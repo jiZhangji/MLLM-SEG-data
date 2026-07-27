@@ -40,6 +40,7 @@ command=(
   --postprocess-rows "${POSTPROCESS_ROWS}"
   --output-dir "${OUTPUT_DIR}"
   --sample-count "${QUALITATIVE_SAMPLE_COUNT:-4}"
+  --rows-per-page "${QUALITATIVE_ROWS_PER_PAGE:-4}"
   --candidate-pool "${QUALITATIVE_CANDIDATE_POOL:-96}"
   --dpi "${QUALITATIVE_DPI:-260}"
 )
@@ -68,6 +69,6 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as handle:
 print(archive)
 PY
 
-echo "Main-table figure: ${OUTPUT_DIR}/main_table_qualitative.pdf"
-echo "Post-process figure: ${OUTPUT_DIR}/postprocess_qualitative.pdf"
+echo "Main-table figures: ${OUTPUT_DIR}/main_table_qualitative*.pdf"
+echo "Post-process figures: ${OUTPUT_DIR}/postprocess_qualitative*.pdf"
 echo "Bundle: ${OUTPUT_DIR}/freeref_qualitative_figures.zip"
