@@ -270,6 +270,9 @@ class IntroMotivationFigureTests(unittest.TestCase):
                 "1",
                 "--contact-sheet-count",
                 "1",
+                "--gallery-count",
+                "1",
+                "--package-output",
                 "--minimum-box-iou",
                 "0.35",
                 "--n-segments",
@@ -287,8 +290,22 @@ class IntroMotivationFigureTests(unittest.TestCase):
                 "intro_candidate_contact_sheet.png",
                 "intro_candidates.csv",
                 "intro_figure_manifest.json",
+                "intro_complete_figures.zip",
+                "intro_individual_panels.zip",
+                "freeref_intro_figure_bundle.zip",
             ):
                 self.assertTrue((output_dir / filename).is_file(), filename)
+            panel_dir = output_dir / "candidates" / "rank_01_id_0" / "panels"
+            for filename in (
+                "input_image.png",
+                "localization_heatmap.png",
+                "predicted_box.png",
+                "a_coarse_overlay.png",
+                "b_coarse_overlay.png",
+                "c_coarse_overlay.png",
+                "panel_manifest.json",
+            ):
+                self.assertTrue((panel_dir / filename).is_file(), filename)
             with Image.open(output_dir / "freeref_intro_motivation.png") as preview:
                 self.assertGreater(preview.width, 700)
                 self.assertGreater(preview.height, 450)

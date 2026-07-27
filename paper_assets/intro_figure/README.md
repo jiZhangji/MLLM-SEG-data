@@ -59,6 +59,10 @@ $ROOT/outputs/freeref_intro_motivation/
   intro_candidate_contact_sheet.png
   intro_candidates.csv
   intro_figure_manifest.json
+  intro_complete_figures.zip
+  intro_individual_panels.zip
+  freeref_intro_figure_bundle.zip
+  candidates/rank_XX_id_YYYY/
 ```
 
 To force a sample after reviewing the contact sheet:
@@ -67,6 +71,28 @@ To force a sample after reviewing the contact sheet:
 INTRO_SAMPLE_ID=1234 \
 MLLM_SEG_ROOT="$ROOT" \
 bash paper_assets/intro_figure/run_intro_motivation_figure.sh
+```
+
+To select a different image after image-level deduplication, generate six
+distinct candidates, export every panel separately, and package everything:
+
+```bash
+INTRO_SAMPLE_RANK=4 \
+INTRO_GALLERY_COUNT=6 \
+INTRO_OUTPUT_DIR="$ROOT/outputs/freeref_intro_motivation_bundle" \
+MLLM_SEG_ROOT="$ROOT" \
+bash paper_assets/intro_figure/run_intro_motivation_figure.sh
+```
+
+Each candidate contains the complete PNG/PDF/SVG figure plus independent
+input, heatmap, box, binary mask, coarse-overlay, uncertainty-map, and
+uncertain-patch PNG panels. Upload the generated directory and all three ZIP
+archives to Hugging Face with:
+
+```bash
+INTRO_OUTPUT_DIR="$ROOT/outputs/freeref_intro_motivation_bundle" \
+MLLM_SEG_ROOT="$ROOT" \
+bash paper_assets/intro_figure/upload_intro_figure_bundle_to_hf.sh
 ```
 
 Every input path can be overridden:

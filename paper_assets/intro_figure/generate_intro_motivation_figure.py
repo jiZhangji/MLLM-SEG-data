@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import re
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import colors
 from matplotlib.patches import Rectangle
-from PIL import Image
+from PIL import Image, ImageDraw
 from scipy.ndimage import binary_dilation, binary_erosion, label
 
 from training_free_refine.visualize_comparison import (
@@ -520,6 +522,163 @@ def draw_uncertain_grid(
         )
 
 
+def sample_image_key(sample: LoadedSample) -> str:
+    return hashlib.sha1(sample.stamp.image.tobytes()).hexdigest()
+
+
+def diverse_samples(samples: list[LoadedSample]) -> list[LoadedSample]:
+    result: list[LoadedSample] = []
+    seen: set[str] = set()
+    for sample in samples:
+        key = sample_image_key(sample)
+        if key not in seen:
+            seen.add(key)
+            result.append(sample)
+    return result
+
+
+def uncertainty_panel(
+    image: np.ndarray,
+    coarse: np.ndarray,
+    uncertainty: np.ndarray,
+) -> tuple[np.ndarray, list[tuple[int, int, int, int, float]]]:
+    cells = uncertain_grid_cells(uncertainty, coarse)
+    base = Image.fromarray(overlay_mask(image, coarse, color=RED, alpha=0.32)).convert(
+        "RGBA"
+    )
+    layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    drawing = ImageDraw.Draw(layer, "RGBA")
+    for x0, y0, x1, y1, score in cells:
+        drawing.rectangle(
+            (x0, y0, x1 - 1, y1 - 1),
+            fill=(255, 213, 74, int(45 + 55 * score)),
+            outline=(122, 37, 31, 220),
+            width=max(1, int(round(min(image.shape[:2]) / 350.0))),
+        )
+    return np.asarray(Image.alpha_composite(base, layer).convert("RGB")), cells
+
+
+def save_individual_panels(
+    sample: LoadedSample,
+    output_dir: Path,
+    threshold: float,
+) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    image = sample.stamp.image
+    Image.fromarray(image).save(output_dir / "input_image.png")
+
+    heat = matplotlib.colormaps["viridis"](
+        np.clip(sample.stamp.coarse_probability, 0.0, 1.0)
+    )[..., :3]
+    heat = np.clip(0.32 * image + 0.68 * heat * 255.0, 0, 255).astype(np.uint8)
+    Image.fromarray(heat).save(output_dir / "localization_heatmap.png")
+
+    box_image = Image.fromarray(image.copy())
+    predicted = mask_bbox(sample.stamp.coarse_probability >= threshold)
+    if predicted is not None:
+        drawing = ImageDraw.Draw(box_image)
+        width = max(2, int(round(min(image.shape[:2]) / 180.0)))
+        drawing.rectangle(
+            (predicted[0], predicted[1], predicted[2] - 1, predicted[3] - 1),
+            outline=GREEN,
+            width=width,
+        )
+    box_image.save(output_dir / "predicted_box.png")
+
+    pixellm_image = resize_rgb(
+        load_rgb(sample.pixellm_item.image), sample.pixellm_target.shape
+    )
+    rows = {
+        "a": (
+            pixellm_image,
+            sample.pixellm_probability,
+            probability_uncertainty(sample.pixellm_probability),
+            sample.pixellm_item.threshold,
+        ),
+        "b": (
+            sample.stamp.image,
+            sample.stamp.coarse_probability,
+            sample.stamp.uncertainty,
+            threshold,
+        ),
+        "c": (
+            sample.text4seg.image,
+            sample.text4seg.coarse_probability,
+            sample.text4seg.uncertainty,
+            threshold,
+        ),
+    }
+    cell_records: dict[str, Any] = {}
+    for marker, (row_image, probability, uncertainty, row_threshold) in rows.items():
+        coarse = probability >= row_threshold
+        Image.fromarray(coarse.astype(np.uint8) * 255).save(
+            output_dir / f"{marker}_coarse_mask.png"
+        )
+        Image.fromarray(overlay_mask(row_image, coarse, color=RED, alpha=0.40)).save(
+            output_dir / f"{marker}_coarse_overlay.png"
+        )
+        Image.fromarray(
+            np.clip(uncertainty * 255.0, 0, 255).astype(np.uint8)
+        ).save(output_dir / f"{marker}_uncertainty_map.png")
+        panel, cells = uncertainty_panel(row_image, coarse, uncertainty)
+        Image.fromarray(panel).save(output_dir / f"{marker}_uncertain_patches.png")
+        cell_records[marker] = cells
+
+    record = {
+        "instance_id": sample.candidate.instance_id,
+        "query": sample.stamp.query or sample.pixellm_query,
+        "row_mapping": {
+            "a": "PixelLM learned mask decoder",
+            "b": "STAMP native visual mask tokens",
+            "c": "Text4Seg textual mask tokens",
+        },
+        "colors": {
+            "red_translucent": "coarse foreground prediction",
+            "yellow_cells": "locally uncertain boundary patches",
+        },
+        "uncertainty_cells": cell_records,
+    }
+    (output_dir / "panel_manifest.json").write_text(
+        json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return record
+
+
+def write_zip(
+    archive: Path,
+    root: Path,
+    files: list[Path],
+) -> None:
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as handle:
+        for path in sorted(set(files)):
+            if path.is_file() and path != archive:
+                handle.write(path, path.relative_to(root).as_posix())
+
+
+def package_outputs(output_dir: Path) -> dict[str, str]:
+    all_files = [
+        path
+        for path in output_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() != ".zip"
+    ]
+    complete_files = [
+        path
+        for path in all_files
+        if "panels" not in path.parts
+        and path.suffix.lower() in {".png", ".pdf", ".svg", ".csv", ".json"}
+    ]
+    panel_files = [path for path in all_files if "panels" in path.parts]
+    archives = {
+        "complete_figures": output_dir / "intro_complete_figures.zip",
+        "individual_panels": output_dir / "intro_individual_panels.zip",
+        "all_materials": output_dir / "freeref_intro_figure_bundle.zip",
+    }
+    write_zip(archives["complete_figures"], output_dir, complete_files)
+    write_zip(archives["individual_panels"], output_dir, panel_files)
+    write_zip(archives["all_materials"], output_dir, all_files)
+    return {key: str(path) for key, path in archives.items()}
+
+
 def draw_localization_row(
     figure: plt.Figure,
     grid: Any,
@@ -757,8 +916,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stem", default="freeref_intro_motivation")
     parser.add_argument("--stamp-label", default="STAMP-7B")
     parser.add_argument("--sample-id", default="")
+    parser.add_argument("--sample-rank", type=int, default=1)
     parser.add_argument("--candidate-pool", type=int, default=48)
     parser.add_argument("--contact-sheet-count", type=int, default=8)
+    parser.add_argument("--gallery-count", type=int, default=1)
+    parser.add_argument("--package-output", action="store_true")
     parser.add_argument("--minimum-box-iou", type=float, default=0.50)
     parser.add_argument("--boundary-sigma", type=float, default=8.0)
     parser.add_argument("--dpi", type=int, default=300)
@@ -768,9 +930,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    if args.candidate_pool <= 0 or args.contact_sheet_count <= 0 or args.dpi <= 0:
+    if (
+        args.candidate_pool <= 0
+        or args.contact_sheet_count <= 0
+        or args.gallery_count <= 0
+        or args.sample_rank <= 0
+        or args.dpi <= 0
+    ):
         raise ValueError(
-            "candidate-pool, contact-sheet-count, and dpi must be positive."
+            "candidate-pool, contact-sheet-count, gallery-count, sample-rank, "
+            "and dpi must be positive."
         )
     if not 0.0 <= args.minimum_box_iou <= 1.0:
         raise ValueError("minimum-box-iou must lie in [0, 1].")
@@ -841,11 +1010,16 @@ def main() -> int:
             + json.dumps(failures[:5], ensure_ascii=False)
         )
     loaded.sort(key=lambda sample: sample.score, reverse=True)
-    selected = loaded[0]
+    diverse = diverse_samples(loaded)
+    if args.sample_rank > len(diverse):
+        raise ValueError(
+            f"sample-rank={args.sample_rank} exceeds {len(diverse)} distinct loaded images."
+        )
+    selected = diverse[args.sample_rank - 1]
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     save_contact_sheet(
-        loaded,
+        diverse,
         args.output_dir / "intro_candidate_contact_sheet.png",
         args.threshold,
         args.contact_sheet_count,
@@ -858,6 +1032,33 @@ def main() -> int:
         args.threshold,
         args.dpi,
     )
+    gallery_records: list[dict[str, Any]] = []
+    gallery_root = args.output_dir / "candidates"
+    for rank, sample in enumerate(diverse[: args.gallery_count], start=1):
+        candidate_root = gallery_root / (
+            f"rank_{rank:02d}_id_{sample.candidate.instance_id}"
+        )
+        render_figure(
+            sample,
+            candidate_root,
+            "intro_motivation",
+            args.threshold,
+            args.dpi,
+        )
+        panel_record = save_individual_panels(
+            sample,
+            candidate_root / "panels",
+            args.threshold,
+        )
+        gallery_records.append(
+            {
+                "rank": rank,
+                "instance_id": sample.candidate.instance_id,
+                "query": sample.stamp.query or sample.pixellm_query,
+                "directory": str(candidate_root),
+                "panels": panel_record,
+            }
+        )
     candidate_rows = [
         {
             "rank": rank,
@@ -882,7 +1083,7 @@ def main() -> int:
                 sample.candidate.pixellm_row, "coarse_boundary_iou"
             ),
         }
-        for rank, sample in enumerate(loaded, start=1)
+        for rank, sample in enumerate(diverse, start=1)
     ]
     with (args.output_dir / "intro_candidates.csv").open(
         "w", newline="", encoding="utf-8"
@@ -897,6 +1098,7 @@ def main() -> int:
         )
     manifest_value = {
         "real_experiment_data": True,
+        "selected_distinct_rank": args.sample_rank,
         "selected_instance_id": selected.candidate.instance_id,
         "query": selected.stamp.query or selected.pixellm_query,
         "stamp_rows": str(args.stamp_rows),
@@ -910,6 +1112,7 @@ def main() -> int:
         "text4seg_metrics": selected.candidate.text4seg_row,
         "pixellm_metrics": selected.candidate.pixellm_row,
         "uncertainty_cells": uncertainty_cells,
+        "gallery": gallery_records,
         "note": (
             "Ground truth is used only for deterministic candidate ranking, "
             "and box-IoU verification. The heatmap, coarse masks, and "
@@ -921,6 +1124,7 @@ def main() -> int:
         json.dumps(manifest_value, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    archives = package_outputs(args.output_dir) if args.package_output else {}
     print(
         json.dumps(
             {
@@ -934,6 +1138,7 @@ def main() -> int:
                     args.output_dir / "intro_candidate_contact_sheet.png"
                 ),
                 "manifest": str(args.output_dir / "intro_figure_manifest.json"),
+                "archives": archives,
             },
             indent=2,
             ensure_ascii=False,
