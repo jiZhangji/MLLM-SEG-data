@@ -63,7 +63,8 @@ done
 "${command[@]}"
 
 export QUALITATIVE_OUTPUT_DIR="${OUTPUT_DIR}"
-"${PYTHON_BIN}" - <<'PY'
+if [[ "${QUALITATIVE_SKIP_ARCHIVE:-0}" != "1" ]]; then
+  "${PYTHON_BIN}" - <<'PY'
 import os
 import zipfile
 from pathlib import Path
@@ -76,9 +77,14 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as handle:
             handle.write(path, path.relative_to(root).as_posix())
 print(archive)
 PY
+fi
 
 echo "Main-table overlay figures: ${OUTPUT_DIR}/main_table_qualitative*.pdf"
 echo "Post-process overlay figures: ${OUTPUT_DIR}/postprocess_qualitative*.pdf"
 echo "Main-table binary zoom figures: ${OUTPUT_DIR}/main_table_binary_zoom*.pdf"
 echo "Post-process binary zoom figures: ${OUTPUT_DIR}/postprocess_binary_zoom*.pdf"
-echo "Bundle: ${OUTPUT_DIR}/freeref_qualitative_figures.zip"
+if [[ "${QUALITATIVE_SKIP_ARCHIVE:-0}" == "1" ]]; then
+  echo "Bundle: skipped (QUALITATIVE_SKIP_ARCHIVE=1)"
+else
+  echo "Bundle: ${OUTPUT_DIR}/freeref_qualitative_figures.zip"
+fi

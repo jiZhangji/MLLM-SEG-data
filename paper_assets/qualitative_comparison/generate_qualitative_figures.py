@@ -591,7 +591,13 @@ def main_table_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[s
             "metrics": row_metrics,
         }
         records.append(record)
-        save_panels(args.output_dir / "main_table_panels", sample.candidate.instance_id, panel_names, panels)
+        if args.render_style != "masks_only":
+            save_panels(
+                args.output_dir / "main_table_panels",
+                sample.candidate.instance_id,
+                panel_names,
+                panels,
+            )
         mask_names = ["ground_truth"] + panel_names[2:]
         save_binary_masks(
             args.output_dir / "main_table_binary_masks",
@@ -744,7 +750,8 @@ def postprocess_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[
                 "metrics": row_metrics,
             }
         )
-        save_panels(args.output_dir / "postprocess_panels", sample_id, titles, panels)
+        if args.render_style != "masks_only":
+            save_panels(args.output_dir / "postprocess_panels", sample_id, titles, panels)
         mask_names = ["ground_truth"] + titles[2:]
         save_binary_masks(
             args.output_dir / "postprocess_binary_masks",
