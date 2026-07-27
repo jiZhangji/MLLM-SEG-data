@@ -23,7 +23,9 @@ from training_free_refine.visualize_comparison import (
     add_refiner_arguments,
     build_refiner,
     load_stamp_view,
+    load_text4seg_view,
 )
+from training_free_refine.refiner import probability_uncertainty
 from universal_freeref.io import load_mask, load_probability, load_rgb
 from universal_freeref.schema import ManifestItem
 
@@ -44,6 +46,7 @@ LINE = "#A8B2B8"
 class PairedCandidate:
     instance_id: str
     stamp_row: dict[str, str]
+    text4seg_row: dict[str, str]
     pixellm_row: dict[str, str]
     score: float
 
@@ -52,6 +55,7 @@ class PairedCandidate:
 class LoadedSample:
     candidate: PairedCandidate
     stamp: SampleView
+    text4seg: SampleView
     pixellm_item: ManifestItem
     pixellm_query: str
     pixellm_probability: np.ndarray
@@ -128,6 +132,7 @@ def row_iou_gain(row: dict[str, str]) -> float:
 
 def pair_candidates(
     stamp_rows: list[dict[str, str]],
+    text4seg_rows: list[dict[str, str]],
     pixellm_rows: list[dict[str, str]],
 ) -> list[PairedCandidate]:
     stamp_by_id = {
@@ -140,40 +145,55 @@ def pair_candidates(
         for row in pixellm_rows
         if (instance_id := canonical_instance_id(row))
     }
+    text4seg_by_id = {
+        instance_id: row
+        for row in text4seg_rows
+        if (instance_id := canonical_instance_id(row))
+    }
     candidates: list[PairedCandidate] = []
     for instance_id in sorted(
-        stamp_by_id.keys() & pixellm_by_id.keys(),
+        stamp_by_id.keys() & text4seg_by_id.keys() & pixellm_by_id.keys(),
         key=lambda value: (
             not value.isdigit(),
             int(value) if value.isdigit() else value,
         ),
     ):
         stamp = stamp_by_id[instance_id]
+        text4seg = text4seg_by_id[instance_id]
         pixellm = pixellm_by_id[instance_id]
         stamp_iou = parse_float(stamp, "coarse_iou")
+        text4seg_iou = parse_float(text4seg, "coarse_iou")
         pixellm_iou = parse_float(pixellm, "coarse_iou")
-        if min(stamp_iou, pixellm_iou) < 0.40:
+        if min(stamp_iou, text4seg_iou, pixellm_iou) < 0.40:
             continue
         stamp_boundary = parse_float(stamp, "coarse_boundary_iou")
+        text4seg_boundary = parse_float(text4seg, "coarse_boundary_iou")
         pixellm_boundary = parse_float(pixellm, "coarse_boundary_iou")
-        semantic_strength = min(stamp_iou, pixellm_iou)
+        semantic_strength = min(stamp_iou, text4seg_iou, pixellm_iou)
         spatial_gap = (
             max(stamp_iou - stamp_boundary, 0.0)
+            + max(text4seg_iou - text4seg_boundary, 0.0)
             + max(pixellm_iou - pixellm_boundary, 0.0)
-        ) / 2.0
+        ) / 3.0
         boundary_gain = (
-            max(row_boundary_gain(stamp), 0.0) + max(row_boundary_gain(pixellm), 0.0)
-        ) / 2.0
+            max(row_boundary_gain(stamp), 0.0)
+            + max(row_boundary_gain(text4seg), 0.0)
+            + max(row_boundary_gain(pixellm), 0.0)
+        ) / 3.0
         iou_gain = (
-            max(row_iou_gain(stamp), 0.0) + max(row_iou_gain(pixellm), 0.0)
-        ) / 2.0
+            max(row_iou_gain(stamp), 0.0)
+            + max(row_iou_gain(text4seg), 0.0)
+            + max(row_iou_gain(pixellm), 0.0)
+        ) / 3.0
         score = (
             2.2 * semantic_strength
             + 1.5 * spatial_gap
             + 1.8 * boundary_gain
             + 0.4 * iou_gain
         )
-        candidates.append(PairedCandidate(instance_id, stamp, pixellm, score))
+        candidates.append(
+            PairedCandidate(instance_id, stamp, text4seg, pixellm, score)
+        )
     return sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
 
 
@@ -218,15 +238,24 @@ def image_distance(first: np.ndarray, second: np.ndarray) -> float:
 def load_candidate(
     candidate: PairedCandidate,
     stamp_rows_path: Path,
+    text4seg_rows_path: Path,
     manifest: dict[str, tuple[ManifestItem, dict[str, Any]]],
     refiner: Any,
     stamp_label: str,
     threshold: float,
     minimum_box_iou: float,
+    boundary_sigma: float,
 ) -> LoadedSample:
     if candidate.instance_id not in manifest:
         raise KeyError(f"PixelLM manifest has no instance_id={candidate.instance_id}.")
     stamp = load_stamp_view(candidate.stamp_row, stamp_rows_path, stamp_label, refiner)
+    text4seg = load_text4seg_view(
+        candidate.text4seg_row,
+        text4seg_rows_path,
+        "Text4Seg-p24",
+        refiner,
+        boundary_sigma,
+    )
     pixellm_item, pixellm_raw = manifest[candidate.instance_id]
     pixellm_target = load_mask(pixellm_item.gt_mask)
     pixellm_image = load_rgb(pixellm_item.image)
@@ -234,6 +263,10 @@ def load_candidate(
     if image_distance(stamp.image, pixellm_image) > 0.025:
         raise ValueError(
             "STAMP and PixelLM rows share an index but not the same image."
+        )
+    if image_distance(stamp.image, text4seg.image) > 0.025:
+        raise ValueError(
+            "STAMP and Text4Seg rows share an index but not the same image."
         )
     pixellm_probability, _ = load_probability(pixellm_item, pixellm_target.shape)
     stamp_coarse = stamp.coarse_probability >= threshold
@@ -252,6 +285,7 @@ def load_candidate(
     return LoadedSample(
         candidate=candidate,
         stamp=stamp,
+        text4seg=text4seg,
         pixellm_item=pixellm_item,
         pixellm_query=query,
         pixellm_probability=pixellm_probability,
@@ -400,8 +434,8 @@ def style_image_axis(axis: plt.Axes) -> None:
         spine.set_linewidth(0.65)
 
 
-def prompt_axis(axis: plt.Axes, row_label: str, prompt: str) -> None:
-    axis.set_facecolor(LIGHT)
+def prompt_axis(axis: plt.Axes, prompt: str) -> None:
+    axis.set_facecolor(WHITE)
     axis.set_xticks([])
     axis.set_yticks([])
     for spine in axis.spines.values():
@@ -409,15 +443,81 @@ def prompt_axis(axis: plt.Axes, row_label: str, prompt: str) -> None:
     axis.text(
         0.50,
         0.50,
-        f'{row_label}\nPrompt: "{clean_prompt(prompt)}"',
+        f'Prompt\n"{clean_prompt(prompt)}"',
         rotation=90,
         ha="center",
         va="center",
-        fontsize=8.2,
+        fontsize=8.0,
         color=INK,
         fontweight="semibold",
         transform=axis.transAxes,
     )
+
+
+def row_marker_axis(axis: plt.Axes, marker: str) -> None:
+    axis.axis("off")
+    axis.text(
+        0.52,
+        0.50,
+        marker,
+        ha="center",
+        va="center",
+        fontsize=10.5,
+        fontweight="bold",
+        color=INK,
+        transform=axis.transAxes,
+    )
+
+
+def uncertain_grid_cells(
+    uncertainty: np.ndarray,
+    coarse: np.ndarray,
+    max_cells: int = 32,
+) -> list[tuple[int, int, int, int, float]]:
+    """Select compact grid cells around the most uncertain mask boundaries."""
+    uncertainty = np.clip(np.asarray(uncertainty, dtype=np.float64), 0.0, 1.0)
+    coarse = np.asarray(coarse, dtype=bool)
+    height, width = coarse.shape
+    cell_size = max(8, int(round(min(height, width) / 24.0)))
+    boundary = np.logical_xor(binary_dilation(coarse), binary_erosion(coarse))
+    boundary_band = binary_dilation(boundary, iterations=max(2, cell_size // 2))
+    proposals: list[tuple[int, int, int, int, float]] = []
+    for y0 in range(0, height, cell_size):
+        y1 = min(y0 + cell_size, height)
+        for x0 in range(0, width, cell_size):
+            x1 = min(x0 + cell_size, width)
+            local_band = boundary_band[y0:y1, x0:x1]
+            if float(local_band.mean()) < 0.08:
+                continue
+            local_uncertainty = uncertainty[y0:y1, x0:x1]
+            score = float(local_uncertainty[local_band].mean())
+            if score > 0.05:
+                proposals.append((x0, y0, x1, y1, score))
+    if not proposals:
+        return []
+    scores = np.asarray([cell[-1] for cell in proposals], dtype=np.float64)
+    cutoff = max(0.16, float(np.quantile(scores, 0.58)))
+    selected = [cell for cell in proposals if cell[-1] >= cutoff]
+    selected.sort(key=lambda cell: cell[-1], reverse=True)
+    return sorted(selected[:max_cells], key=lambda cell: (cell[1], cell[0]))
+
+
+def draw_uncertain_grid(
+    axis: plt.Axes,
+    cells: list[tuple[int, int, int, int, float]],
+) -> None:
+    for x0, y0, x1, y1, score in cells:
+        axis.add_patch(
+            Rectangle(
+                (x0, y0),
+                x1 - x0,
+                y1 - y0,
+                facecolor="#FFD54A",
+                edgecolor="#7A251F",
+                linewidth=0.75,
+                alpha=0.18 + 0.22 * score,
+            )
+        )
 
 
 def draw_localization_row(
@@ -427,14 +527,10 @@ def draw_localization_row(
     threshold: float,
 ) -> None:
     prompt = sample.stamp.query or sample.pixellm_query
-    prompt_axis(
-        figure.add_subplot(grid[0, 0]),
-        "Semantic localization",
-        prompt,
-    )
+    prompt_axis(figure.add_subplot(grid[0, 0]), prompt)
     input_axis = figure.add_subplot(grid[0, 1])
     input_axis.imshow(sample.stamp.image)
-    input_axis.set_title("Input image", fontsize=9.4, color=INK, pad=5)
+    input_axis.set_title("Image", fontsize=9.2, color=INK, pad=4)
     style_image_axis(input_axis)
 
     heatmap_axis = figure.add_subplot(grid[0, 2])
@@ -446,7 +542,7 @@ def draw_localization_row(
         vmax=1.0,
         alpha=0.68,
     )
-    heatmap_axis.set_title("VLM localization heatmap", fontsize=9.4, color=INK, pad=5)
+    heatmap_axis.set_title("Localization", fontsize=9.2, color=INK, pad=4)
     style_image_axis(heatmap_axis)
 
     box_axis = figure.add_subplot(grid[0, 3])
@@ -464,106 +560,44 @@ def draw_localization_row(
                 linewidth=2.2,
             )
         )
-    box_axis.text(
-        0.03,
-        0.96,
-        f"Box IoU {sample.bbox_iou:.2f}",
-        transform=box_axis.transAxes,
-        ha="left",
-        va="top",
-        fontsize=7.8,
-        color=WHITE,
-        bbox={"facecolor": INK, "edgecolor": "none", "pad": 2.2, "alpha": 0.82},
-    )
-    box_axis.set_title("Predicted box", fontsize=9.4, color=INK, pad=5)
+    box_axis.set_title("Box", fontsize=9.2, color=INK, pad=4)
     style_image_axis(box_axis)
 
 
-def draw_defect_cell(
-    figure: plt.Figure,
-    cell: Any,
-    image: np.ndarray,
-    coarse: np.ndarray,
-    target: np.ndarray,
-    callouts: list[dict[str, Any]],
-    title: str,
-) -> None:
-    nested = cell.subgridspec(
-        2, 2, width_ratios=(1.55, 1.0), height_ratios=(1, 1), wspace=0.05, hspace=0.08
-    )
-    main_axis = figure.add_subplot(nested[:, 0])
-    main_axis.imshow(overlay_mask(image, coarse))
-    contour(main_axis, target, WHITE, 1.15)
-    contour(main_axis, coarse, ORANGE, 1.05)
-    for callout in callouts:
-        x0, y0, x1, y1 = callout["box"]
-        main_axis.add_patch(
-            Rectangle(
-                (x0, y0),
-                x1 - x0,
-                y1 - y0,
-                fill=False,
-                edgecolor=RED,
-                linewidth=1.55,
-            )
-        )
-    main_axis.set_title(title, fontsize=9.4, color=INK, pad=5)
-    style_image_axis(main_axis)
-
-    for index in range(2):
-        zoom_axis = figure.add_subplot(nested[index, 1])
-        callout = callouts[min(index, len(callouts) - 1)]
-        x0, y0, x1, y1 = callout["box"]
-        zoom_axis.imshow(image)
-        contour(zoom_axis, target, CYAN, 1.55)
-        contour(zoom_axis, coarse, ORANGE, 1.55)
-        zoom_axis.set_xlim(x0, x1)
-        zoom_axis.set_ylim(y1, y0)
-        zoom_axis.set_title(callout["category"], fontsize=7.2, color=RED, pad=2)
-        zoom_axis.set_xticks([])
-        zoom_axis.set_yticks([])
-        for spine in zoom_axis.spines.values():
-            spine.set_color(RED)
-            spine.set_linewidth(1.0)
-
-
-def draw_paradigm_row(
+def draw_output_row(
     figure: plt.Figure,
     grid: Any,
     row: int,
-    row_label: str,
-    prompt: str,
+    marker: str,
     image: np.ndarray,
     probability: np.ndarray,
-    target: np.ndarray,
+    uncertainty: np.ndarray,
     threshold: float,
-) -> list[dict[str, Any]]:
+) -> list[tuple[int, int, int, int, float]]:
     coarse = probability >= threshold
-    callouts = error_callouts(coarse, target, count=2)
-    prompt_axis(figure.add_subplot(grid[row, 0]), row_label, prompt)
+    cells = uncertain_grid_cells(uncertainty, coarse)
+    row_marker_axis(figure.add_subplot(grid[row, 0]), marker)
     input_axis = figure.add_subplot(grid[row, 1])
     input_axis.imshow(image)
-    input_axis.set_title("Input image", fontsize=9.4, color=INK, pad=5)
+    if row == 1:
+        input_axis.set_title("Image", fontsize=9.2, color=INK, pad=4)
     style_image_axis(input_axis)
 
     mask_axis = figure.add_subplot(grid[row, 2])
-    mask_rgb = np.zeros((*coarse.shape, 3), dtype=np.float32)
-    mask_rgb[~coarse] = np.asarray(colors.to_rgb(LIGHT))
-    mask_rgb[coarse] = np.asarray(colors.to_rgb(ORANGE))
-    mask_axis.imshow(mask_rgb)
-    contour(mask_axis, coarse, INK, 0.9)
-    mask_axis.set_title("Coarse-grained mask", fontsize=9.4, color=INK, pad=5)
+    mask_axis.imshow(overlay_mask(image, coarse, color=RED, alpha=0.40))
+    contour(mask_axis, coarse, "#8E241E", 0.85)
+    if row == 1:
+        mask_axis.set_title("Coarse mask", fontsize=9.2, color=INK, pad=4)
     style_image_axis(mask_axis)
-    draw_defect_cell(
-        figure,
-        grid[row, 3],
-        image,
-        coarse,
-        target,
-        callouts,
-        "Local spatial defects",
-    )
-    return callouts
+
+    uncertainty_axis = figure.add_subplot(grid[row, 3])
+    uncertainty_axis.imshow(overlay_mask(image, coarse, color=RED, alpha=0.32))
+    contour(uncertainty_axis, coarse, "#8E241E", 0.75)
+    draw_uncertain_grid(uncertainty_axis, cells)
+    if row == 1:
+        uncertainty_axis.set_title("Uncertain patches", fontsize=9.2, color=INK, pad=4)
+    style_image_axis(uncertainty_axis)
+    return cells
 
 
 def render_figure(
@@ -572,46 +606,55 @@ def render_figure(
     stem: str,
     threshold: float,
     dpi: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> dict[str, list[tuple[int, int, int, int, float]]]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    figure = plt.figure(figsize=(12.0, 8.2), facecolor=WHITE)
+    figure = plt.figure(figsize=(10.8, 9.0), facecolor=WHITE)
     grid = figure.add_gridspec(
-        3,
         4,
-        width_ratios=(0.12, 1.0, 1.0, 1.28),
-        height_ratios=(1.0, 1.0, 1.0),
-        left=0.035,
+        4,
+        width_ratios=(0.11, 1.0, 1.0, 1.0),
+        height_ratios=(1.0, 1.0, 1.0, 1.0),
+        left=0.025,
         right=0.985,
-        bottom=0.075,
-        top=0.895,
-        wspace=0.06,
-        hspace=0.22,
+        bottom=0.035,
+        top=0.975,
+        wspace=0.045,
+        hspace=0.12,
     )
     draw_localization_row(figure, grid, sample, threshold)
 
     pixellm_image = resize_rgb(
         load_rgb(sample.pixellm_item.image), sample.pixellm_target.shape
     )
-    pixellm_callouts = draw_paradigm_row(
+    cell_records: dict[str, list[tuple[int, int, int, int, float]]] = {}
+    cell_records["a"] = draw_output_row(
         figure,
         grid,
         1,
-        "Learned mask decoder",
-        sample.pixellm_query or sample.stamp.query,
+        "(a)",
         pixellm_image,
         sample.pixellm_probability,
-        sample.pixellm_target,
+        probability_uncertainty(sample.pixellm_probability),
         sample.pixellm_item.threshold,
     )
-    stamp_callouts = draw_paradigm_row(
+    cell_records["b"] = draw_output_row(
         figure,
         grid,
         2,
-        "Native mask tokens",
-        sample.stamp.query or sample.pixellm_query,
+        "(b)",
         sample.stamp.image,
         sample.stamp.coarse_probability,
-        sample.stamp.target,
+        sample.stamp.uncertainty,
+        threshold,
+    )
+    cell_records["c"] = draw_output_row(
+        figure,
+        grid,
+        3,
+        "(c)",
+        sample.text4seg.image,
+        sample.text4seg.coarse_probability,
+        sample.text4seg.uncertainty,
         threshold,
     )
 
@@ -626,26 +669,6 @@ def render_figure(
         linewidth=0.85,
     )
     figure.add_artist(separator)
-    figure.text(
-        0.50,
-        0.975,
-        "Accurate semantic localization, limited local spatial recovery",
-        ha="center",
-        va="top",
-        fontsize=13.0,
-        fontweight="bold",
-        color=INK,
-    )
-    figure.text(
-        0.50,
-        0.022,
-        "Orange: coarse prediction   Cyan: ground-truth boundary   "
-        "Red boxes: representative local spatial errors",
-        ha="center",
-        va="bottom",
-        fontsize=8.2,
-        color=MUTED,
-    )
     for suffix in ("png", "pdf", "svg"):
         figure.savefig(
             output_dir / f"{stem}.{suffix}",
@@ -655,7 +678,7 @@ def render_figure(
             pad_inches=0.05,
         )
     plt.close(figure)
-    return pixellm_callouts, stamp_callouts
+    return cell_records
 
 
 def save_contact_sheet(
@@ -670,8 +693,8 @@ def save_contact_sheet(
         return
     figure, axes = plt.subplots(
         len(shown),
-        4,
-        figsize=(11.5, max(2.25 * len(shown), 3.0)),
+        5,
+        figsize=(13.5, max(2.25 * len(shown), 3.0)),
         squeeze=False,
         constrained_layout=True,
     )
@@ -689,12 +712,17 @@ def save_contact_sheet(
                 pixel_coarse,
             ),
             overlay_mask(sample.stamp.image, stamp_coarse),
+            overlay_mask(
+                sample.text4seg.image,
+                sample.text4seg.coarse_probability >= threshold,
+            ),
         )
         titles = (
             f"#{row_index + 1} ID {sample.candidate.instance_id}",
             f"Heatmap | box IoU {sample.bbox_iou:.2f}",
             "PixelLM coarse mask",
             "STAMP coarse mask",
+            "Text4Seg coarse mask",
         )
         for column, (image, title) in enumerate(zip(images, titles)):
             axes[row_index, column].imshow(
@@ -717,11 +745,12 @@ def save_contact_sheet(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Select a paired STAMP/PixelLM sample and render the FreeRef "
+            "Select a paired STAMP/Text4Seg/PixelLM sample and render the FreeRef "
             "introduction motivation figure."
         )
     )
     parser.add_argument("--stamp-rows", type=Path, required=True)
+    parser.add_argument("--text4seg-rows", type=Path, required=True)
     parser.add_argument("--pixellm-rows", type=Path, required=True)
     parser.add_argument("--pixellm-manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -731,6 +760,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-pool", type=int, default=48)
     parser.add_argument("--contact-sheet-count", type=int, default=8)
     parser.add_argument("--minimum-box-iou", type=float, default=0.50)
+    parser.add_argument("--boundary-sigma", type=float, default=8.0)
     parser.add_argument("--dpi", type=int, default=300)
     add_refiner_arguments(parser)
     return parser
@@ -744,17 +774,26 @@ def main() -> int:
         )
     if not 0.0 <= args.minimum_box_iou <= 1.0:
         raise ValueError("minimum-box-iou must lie in [0, 1].")
+    if args.boundary_sigma <= 0:
+        raise ValueError("boundary-sigma must be positive.")
     args.stamp_rows = args.stamp_rows.expanduser().resolve()
+    args.text4seg_rows = args.text4seg_rows.expanduser().resolve()
     args.pixellm_rows = args.pixellm_rows.expanduser().resolve()
     args.pixellm_manifest = args.pixellm_manifest.expanduser().resolve()
     args.output_dir = args.output_dir.expanduser().resolve()
-    for path in (args.stamp_rows, args.pixellm_rows, args.pixellm_manifest):
+    for path in (
+        args.stamp_rows,
+        args.text4seg_rows,
+        args.pixellm_rows,
+        args.pixellm_manifest,
+    ):
         if not path.is_file():
             raise FileNotFoundError(path)
 
     stamp_rows = read_csv(args.stamp_rows)
+    text4seg_rows = read_csv(args.text4seg_rows)
     pixellm_rows = read_csv(args.pixellm_rows)
-    paired = pair_candidates(stamp_rows, pixellm_rows)
+    paired = pair_candidates(stamp_rows, text4seg_rows, pixellm_rows)
     if args.sample_id:
         requested = (
             str(int(args.sample_id)) if args.sample_id.isdigit() else args.sample_id
@@ -766,7 +805,7 @@ def main() -> int:
             raise ValueError(f"No eligible paired sample has ID {requested!r}.")
     if not paired:
         raise RuntimeError(
-            "No paired STAMP/PixelLM rows passed the semantic-localization filter."
+            "No paired STAMP/Text4Seg/PixelLM rows passed the semantic-localization filter."
         )
 
     manifest = manifest_index(args.pixellm_manifest)
@@ -778,11 +817,13 @@ def main() -> int:
             sample = load_candidate(
                 candidate,
                 args.stamp_rows,
+                args.text4seg_rows,
                 manifest,
                 refiner,
                 args.stamp_label,
                 args.threshold,
                 args.minimum_box_iou,
+                args.boundary_sigma,
             )
             if sample.bbox_iou < args.minimum_box_iou:
                 continue
@@ -810,7 +851,7 @@ def main() -> int:
         args.contact_sheet_count,
         min(args.dpi, 180),
     )
-    pixellm_callouts, stamp_callouts = render_figure(
+    uncertainty_cells = render_figure(
         selected,
         args.output_dir,
         args.stem,
@@ -827,6 +868,12 @@ def main() -> int:
             "stamp_coarse_iou": parse_float(sample.candidate.stamp_row, "coarse_iou"),
             "stamp_coarse_boundary_iou": parse_float(
                 sample.candidate.stamp_row, "coarse_boundary_iou"
+            ),
+            "text4seg_coarse_iou": parse_float(
+                sample.candidate.text4seg_row, "coarse_iou"
+            ),
+            "text4seg_coarse_boundary_iou": parse_float(
+                sample.candidate.text4seg_row, "coarse_boundary_iou"
             ),
             "pixellm_coarse_iou": parse_float(
                 sample.candidate.pixellm_row, "coarse_iou"
@@ -853,19 +900,21 @@ def main() -> int:
         "selected_instance_id": selected.candidate.instance_id,
         "query": selected.stamp.query or selected.pixellm_query,
         "stamp_rows": str(args.stamp_rows),
+        "text4seg_rows": str(args.text4seg_rows),
         "pixellm_rows": str(args.pixellm_rows),
         "pixellm_manifest": str(args.pixellm_manifest),
         "selection_score": selected.score,
         "predicted_box_iou": selected.bbox_iou,
         "object_fraction": selected.object_fraction,
         "stamp_metrics": selected.candidate.stamp_row,
+        "text4seg_metrics": selected.candidate.text4seg_row,
         "pixellm_metrics": selected.candidate.pixellm_row,
-        "pixellm_callouts": pixellm_callouts,
-        "stamp_callouts": stamp_callouts,
+        "uncertainty_cells": uncertainty_cells,
         "note": (
             "Ground truth is used only for deterministic candidate ranking, "
-            "box-IoU verification, and locating the red diagnostic callouts. "
-            "The heatmap and coarse masks are model outputs."
+            "and box-IoU verification. The heatmap, coarse masks, and "
+            "uncertainty grids are computed only from model outputs. "
+            "Rows (a), (b), and (c) correspond to PixelLM, STAMP, and Text4Seg."
         ),
     }
     (args.output_dir / "intro_figure_manifest.json").write_text(

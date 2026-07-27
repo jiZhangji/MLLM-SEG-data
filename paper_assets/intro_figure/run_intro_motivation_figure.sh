@@ -40,6 +40,18 @@ if [[ -z "${STAMP_ROWS}" ]]; then
   }
 fi
 
+TEXT4SEG_ROWS="${INTRO_TEXT4SEG_ROWS:-}"
+if [[ -z "${TEXT4SEG_ROWS}" ]]; then
+  TEXT4SEG_ROWS="$(first_existing \
+    "${ROOT}/outputs/text4seg_training_free_${SPLIT}/eval_rows.csv" \
+    "${ROOT}/outputs/text4seg_training_free_${SLUG}/eval_rows.csv" \
+    "${FINAL_ROOT}/postprocess/text4seg_p24/${SLUG}/freeref/eval_rows.csv" \
+  )" || {
+    echo "ERROR: could not locate complete Text4Seg-p24 ${SPLIT} eval_rows.csv." >&2
+    exit 1
+  }
+fi
+
 PIXELLM_ROWS="${INTRO_PIXELLM_ROWS:-}"
 PIXELLM_MANIFEST="${INTRO_PIXELLM_MANIFEST:-}"
 if [[ -z "${PIXELLM_ROWS}" || -z "${PIXELLM_MANIFEST}" ]]; then
@@ -57,7 +69,11 @@ if [[ -z "${PIXELLM_ROWS}" || -z "${PIXELLM_MANIFEST}" ]]; then
   done
 fi
 
-for required in "${STAMP_ROWS}" "${PIXELLM_ROWS}" "${PIXELLM_MANIFEST}"; do
+for required in \
+  "${STAMP_ROWS}" \
+  "${TEXT4SEG_ROWS}" \
+  "${PIXELLM_ROWS}" \
+  "${PIXELLM_MANIFEST}"; do
   if [[ -z "${required}" || ! -f "${required}" ]]; then
     echo "ERROR: required paired evaluation input is missing: ${required:-<empty>}" >&2
     exit 1
@@ -69,6 +85,7 @@ cd "${REPO}"
 export PYTHONPATH="${REPO}:${PYTHONPATH:-}"
 
 echo "STAMP rows:      ${STAMP_ROWS}"
+echo "Text4Seg rows:   ${TEXT4SEG_ROWS}"
 echo "PixelLM rows:    ${PIXELLM_ROWS}"
 echo "PixelLM manifest:${PIXELLM_MANIFEST}"
 echo "Output:          ${OUTPUT_DIR}"
@@ -77,6 +94,7 @@ command=(
   "${PYTHON_BIN}"
   -m paper_assets.intro_figure.generate_intro_motivation_figure
   --stamp-rows "${STAMP_ROWS}"
+  --text4seg-rows "${TEXT4SEG_ROWS}"
   --pixellm-rows "${PIXELLM_ROWS}"
   --pixellm-manifest "${PIXELLM_MANIFEST}"
   --output-dir "${OUTPUT_DIR}"

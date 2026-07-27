@@ -15,6 +15,7 @@ from paper_assets.intro_figure.generate_intro_motivation_figure import (
     error_callouts,
     main,
     pair_candidates,
+    uncertain_grid_cells,
 )
 
 
@@ -52,8 +53,34 @@ class IntroMotivationFigureTests(unittest.TestCase):
                 "refined_boundary_iou": "0.40",
             },
         ]
-        paired = pair_candidates(stamp, pixellm)
+        text4seg = [
+            {
+                "name": "refcoco_val_000003",
+                "coarse_iou": "0.74",
+                "refined_iou": "0.78",
+                "coarse_boundary_iou": "0.18",
+                "refined_boundary_iou": "0.30",
+            },
+            {
+                "name": "refcoco_val_000004",
+                "coarse_iou": "0.32",
+                "refined_iou": "0.60",
+                "coarse_boundary_iou": "0.07",
+                "refined_boundary_iou": "0.35",
+            },
+        ]
+        paired = pair_candidates(stamp, text4seg, pixellm)
         self.assertEqual([candidate.instance_id for candidate in paired], ["3"])
+
+    def test_uncertainty_cells_stay_near_the_coarse_boundary(self):
+        coarse = np.zeros((96, 128), dtype=bool)
+        coarse[20:76, 30:96] = True
+        uncertainty = np.zeros_like(coarse, dtype=np.float32)
+        uncertainty[16:30, 28:100] = 0.9
+        cells = uncertain_grid_cells(uncertainty, coarse, max_cells=12)
+        self.assertTrue(cells)
+        self.assertLessEqual(len(cells), 12)
+        self.assertTrue(all(cell[-1] > 0.0 for cell in cells))
 
     def test_boundary_callouts_cover_local_false_positive_and_negative_regions(self):
         target = np.zeros((80, 100), dtype=bool)
@@ -85,9 +112,15 @@ class IntroMotivationFigureTests(unittest.TestCase):
             image_path = root / "image.png"
             target_path = root / "target.png"
             prediction_path = root / "pixellm_logits.npz"
+            text4seg_prediction_path = root / "text4seg_pred.png"
             Image.fromarray(image).save(image_path)
             Image.fromarray(target.astype(np.uint8) * 255).save(target_path)
             np.savez_compressed(prediction_path, logits=pixellm_probability)
+            text4seg_prediction = target.copy()
+            text4seg_prediction[45:62, 82:94] = True
+            Image.fromarray(text4seg_prediction.astype(np.uint8) * 255).save(
+                text4seg_prediction_path
+            )
 
             grid_h, grid_w = 8, 8
             grid_target = (
@@ -191,11 +224,42 @@ class IntroMotivationFigureTests(unittest.TestCase):
                     }
                 )
 
+            text4seg_rows = root / "text4seg_rows.csv"
+            with text4seg_rows.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "name",
+                        "pred_mask",
+                        "image",
+                        "gt_mask",
+                        "coarse_iou",
+                        "refined_iou",
+                        "coarse_boundary_iou",
+                        "refined_boundary_iou",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "name": "refcoco_val_000000",
+                        "pred_mask": str(text4seg_prediction_path),
+                        "image": str(image_path),
+                        "gt_mask": str(target_path),
+                        "coarse_iou": "0.74",
+                        "refined_iou": "0.78",
+                        "coarse_boundary_iou": "0.24",
+                        "refined_boundary_iou": "0.39",
+                    }
+                )
+
             output_dir = root / "output"
             argv = [
                 "generate_intro_motivation_figure",
                 "--stamp-rows",
                 str(stamp_rows),
+                "--text4seg-rows",
+                str(text4seg_rows),
                 "--pixellm-rows",
                 str(pixellm_rows),
                 "--pixellm-manifest",
@@ -228,6 +292,11 @@ class IntroMotivationFigureTests(unittest.TestCase):
             with Image.open(output_dir / "freeref_intro_motivation.png") as preview:
                 self.assertGreater(preview.width, 700)
                 self.assertGreater(preview.height, 450)
+            svg = (output_dir / "freeref_intro_motivation.svg").read_text(
+                encoding="utf-8"
+            )
+            for method_name in ("PixelLM", "STAMP-7B", "Text4Seg"):
+                self.assertNotIn(method_name, svg)
 
 
 if __name__ == "__main__":
