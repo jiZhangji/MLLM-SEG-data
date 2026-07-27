@@ -41,7 +41,9 @@ command=(
   --output-dir "${OUTPUT_DIR}"
   --sample-count "${QUALITATIVE_SAMPLE_COUNT:-4}"
   --rows-per-page "${QUALITATIVE_ROWS_PER_PAGE:-4}"
+  --zoom-rows-per-page "${QUALITATIVE_ZOOM_ROWS_PER_PAGE:-2}"
   --candidate-pool "${QUALITATIVE_CANDIDATE_POOL:-96}"
+  --render-style "${QUALITATIVE_RENDER_STYLE:-overlay}"
   --dpi "${QUALITATIVE_DPI:-260}"
   --main-selection-mode "${QUALITATIVE_MAIN_SELECTION_MODE:-balanced}"
   --post-selection-mode "${QUALITATIVE_POST_SELECTION_MODE:-balanced}"
@@ -75,6 +77,8 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as handle:
 print(archive)
 PY
 
-echo "Main-table figures: ${OUTPUT_DIR}/main_table_qualitative*.pdf"
-echo "Post-process figures: ${OUTPUT_DIR}/postprocess_qualitative*.pdf"
+echo "Main-table overlay figures: ${OUTPUT_DIR}/main_table_qualitative*.pdf"
+echo "Post-process overlay figures: ${OUTPUT_DIR}/postprocess_qualitative*.pdf"
+echo "Main-table binary zoom figures: ${OUTPUT_DIR}/main_table_binary_zoom*.pdf"
+echo "Post-process binary zoom figures: ${OUTPUT_DIR}/postprocess_binary_zoom*.pdf"
 echo "Bundle: ${OUTPUT_DIR}/freeref_qualitative_figures.zip"

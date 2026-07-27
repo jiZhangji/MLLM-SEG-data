@@ -100,3 +100,18 @@ bash paper_assets/qualitative_comparison/run_qualitative_figures.sh
 The output CSV records the selection score, mean base/final IoU, mean IoU
 gain, and corresponding boundary-IoU values. These fields make the qualitative
 selection auditable rather than relying on visual preference alone.
+
+For boundary-focused paper figures, render strict black-and-white masks with a
+shared automatically selected detail crop. Each example is shown as a full row
+with a red ROI box followed by a magnified row of the same region:
+
+```bash
+QUALITATIVE_RENDER_STYLE=binary_zoom \
+QUALITATIVE_ZOOM_ROWS_PER_PAGE=2 \
+MLLM_SEG_ROOT="$ROOT" \
+bash paper_assets/qualitative_comparison/run_qualitative_figures.sh
+```
+
+The crop is selected where FreeRef corrects the most base-model errors near the
+ground-truth boundary. All methods use exactly the same crop coordinates, and
+mask panels contain only pixel values 0 and 255.

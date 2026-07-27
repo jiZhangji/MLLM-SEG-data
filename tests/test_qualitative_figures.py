@@ -10,9 +10,12 @@ from PIL import Image
 from paper_assets.qualitative_comparison.generate_qualitative_figures import (
     BLUE,
     BLUE_EDGE,
+    best_zoom_box,
+    binary_panel,
     hard_recovery_score,
     mask_overlay,
     postprocess_score,
+    save_binary_zoom_grid,
     save_grid,
     save_grid_pages,
 )
@@ -67,6 +70,48 @@ class QualitativeFigureTests(unittest.TestCase):
             }
         ] * 3
         self.assertGreater(hard_recovery_score(strong), hard_recovery_score(modest))
+
+    def test_binary_panel_is_strict_black_and_white(self):
+        mask = np.zeros((20, 30), dtype=bool)
+        mask[4:15, 8:21] = True
+        panel = binary_panel(mask)
+        self.assertEqual(panel.shape, (20, 30, 3))
+        self.assertEqual(set(np.unique(panel).tolist()), {0, 255})
+
+    def test_zoom_box_finds_recovered_region(self):
+        target = np.zeros((100, 120), dtype=bool)
+        target[25:85, 25:95] = True
+        base = target.copy()
+        base[55:80, 70:92] = False
+        refined = target.copy()
+        x0, y0, x1, y1 = best_zoom_box(target, [base], [refined], fraction=0.30)
+        self.assertLessEqual(x0, 80)
+        self.assertGreaterEqual(x1, 70)
+        self.assertLessEqual(y0, 70)
+        self.assertGreaterEqual(y1, 55)
+
+    def test_binary_zoom_grid_exports_all_formats(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            image = np.full((80, 120, 3), 150, dtype=np.uint8)
+            target = np.zeros((80, 120), dtype=bool)
+            target[15:70, 30:95] = True
+            binary = binary_panel(target)
+            rows = [
+                {
+                    "sample_id": "7",
+                    "prompt": "the foreground object",
+                    "binary_panels": [image] + [binary] * 7,
+                    "zoom_box": (45, 30, 90, 65),
+                }
+            ]
+            stem = root / "binary_zoom"
+            save_binary_zoom_grid(rows, [f"C{i}" for i in range(8)], stem, 70, {7})
+            for suffix in ("png", "pdf", "svg"):
+                self.assertTrue(stem.with_suffix(f".{suffix}").is_file())
+            with Image.open(stem.with_suffix(".png")) as rendered:
+                self.assertGreater(rendered.width, 900)
+                self.assertGreater(rendered.height, 200)
 
     def test_grid_exports_png_pdf_and_svg(self):
         with TemporaryDirectory() as temporary_directory:

@@ -13,6 +13,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Rectangle
 from PIL import Image
 from scipy.ndimage import binary_dilation, binary_erosion
 from tqdm import tqdm
@@ -64,7 +65,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--sample-count", type=int, default=4)
     parser.add_argument("--rows-per-page", type=int, default=4)
+    parser.add_argument("--zoom-rows-per-page", type=int, default=2)
     parser.add_argument("--candidate-pool", type=int, default=96)
+    parser.add_argument(
+        "--render-style",
+        choices=("overlay", "binary_zoom", "both"),
+        default="overlay",
+    )
     parser.add_argument(
         "--main-selection-mode",
         choices=("balanced", "hard_recovery"),
@@ -279,6 +286,165 @@ def save_grid_pages(
     return pages
 
 
+def binary_panel(mask: np.ndarray) -> np.ndarray:
+    value = np.asarray(mask, dtype=bool).astype(np.uint8) * 255
+    return np.repeat(value[..., None], 3, axis=2)
+
+
+def window_argmax(score: np.ndarray, height: int, width: int) -> tuple[int, int]:
+    score = np.asarray(score, dtype=np.float64)
+    integral = np.pad(score, ((1, 0), (1, 0))).cumsum(0).cumsum(1)
+    sums = (
+        integral[height:, width:]
+        - integral[:-height, width:]
+        - integral[height:, :-width]
+        + integral[:-height, :-width]
+    )
+    y, x = np.unravel_index(int(np.argmax(sums)), sums.shape)
+    return int(y), int(x)
+
+
+def best_zoom_box(
+    target: np.ndarray,
+    base_masks: list[np.ndarray],
+    refined_masks: list[np.ndarray],
+    fraction: float = 0.30,
+) -> tuple[int, int, int, int]:
+    target = np.asarray(target, dtype=bool)
+    height, width = target.shape
+    crop_height = min(height, max(48, int(round(height * fraction))))
+    crop_width = min(width, max(48, int(round(width * fraction))))
+    improvement = np.zeros_like(target, dtype=np.float64)
+    regression = np.zeros_like(target, dtype=np.float64)
+    for base, refined in zip(base_masks, refined_masks):
+        base_error = np.asarray(base, dtype=bool) != target
+        refined_error = np.asarray(refined, dtype=bool) != target
+        improvement += base_error & ~refined_error
+        regression += ~base_error & refined_error
+    boundary = binary_dilation(target) ^ binary_erosion(target)
+    boundary_band = binary_dilation(
+        boundary, iterations=max(2, int(round(min(height, width) * 0.025)))
+    )
+    score = (2.5 * improvement - regression) * (1.0 + boundary_band)
+    if float(score.max()) <= 0.0:
+        score = boundary_band.astype(np.float64)
+    y0, x0 = window_argmax(score, crop_height, crop_width)
+    return x0, y0, x0 + crop_width, y0 + crop_height
+
+
+def save_binary_zoom_grid(
+    rows: list[dict[str, Any]],
+    titles: list[str],
+    output_stem: Path,
+    dpi: int,
+    ours_columns: set[int],
+) -> None:
+    sample_count = len(rows)
+    figure, axes = plt.subplots(
+        sample_count * 2,
+        len(titles),
+        figsize=(16.2, max(4.25 * sample_count, 4.8)),
+        squeeze=False,
+    )
+    figure.subplots_adjust(
+        left=0.125, right=0.995, top=0.94, bottom=0.02, wspace=0.025, hspace=0.035
+    )
+    roi_color = "#D62F2F"
+    for sample_index, row in enumerate(rows):
+        full_row = sample_index * 2
+        zoom_row = full_row + 1
+        x0, y0, x1, y1 = row["zoom_box"]
+        for column, (title, panel) in enumerate(zip(titles, row["binary_panels"])):
+            full_axis = axes[full_row, column]
+            zoom_axis = axes[zoom_row, column]
+            interpolation = "bilinear" if column == 0 else "nearest"
+            full_axis.imshow(panel, interpolation=interpolation)
+            full_axis.add_patch(
+                Rectangle(
+                    (x0, y0),
+                    x1 - x0,
+                    y1 - y0,
+                    fill=False,
+                    edgecolor=roi_color,
+                    linewidth=1.35,
+                )
+            )
+            zoom_axis.imshow(panel[y0:y1, x0:x1], interpolation=interpolation)
+            for axis in (full_axis, zoom_axis):
+                axis.set_xticks([])
+                axis.set_yticks([])
+                for spine in axis.spines.values():
+                    spine.set_linewidth(1.45 if column in ours_columns else 0.5)
+                    spine.set_color(OURS if column in ours_columns else "#BFC8CE")
+            for spine in zoom_axis.spines.values():
+                spine.set_color(OURS if column in ours_columns else roi_color)
+                spine.set_linewidth(1.45 if column in ours_columns else 0.85)
+            if sample_index == 0:
+                full_axis.set_title(
+                    title,
+                    fontsize=9.0,
+                    fontweight="bold" if column in ours_columns else "semibold",
+                    color=OURS if column in ours_columns else INK,
+                    pad=5,
+                )
+        full_position = axes[full_row, 0].get_position()
+        zoom_position = axes[zoom_row, 0].get_position()
+        prompt = textwrap.fill(str(row["prompt"]), width=26)
+        figure.text(
+            0.008,
+            0.5 * (full_position.y0 + full_position.y1),
+            f"#{sample_index + 1} Full\n{prompt}",
+            ha="left",
+            va="center",
+            fontsize=7.2,
+            color=MUTED,
+            linespacing=1.22,
+        )
+        figure.text(
+            0.095,
+            0.5 * (zoom_position.y0 + zoom_position.y1),
+            "Zoom",
+            ha="right",
+            va="center",
+            fontsize=7.4,
+            fontweight="bold",
+            color=roi_color,
+        )
+    output_stem.parent.mkdir(parents=True, exist_ok=True)
+    for suffix in ("png", "pdf", "svg"):
+        figure.savefig(
+            output_stem.with_suffix(f".{suffix}"),
+            dpi=dpi,
+            facecolor="white",
+            bbox_inches="tight",
+            pad_inches=0.04,
+        )
+    plt.close(figure)
+
+
+def save_binary_zoom_grid_pages(
+    rows: list[dict[str, Any]],
+    titles: list[str],
+    output_stem: Path,
+    dpi: int,
+    ours_columns: set[int],
+    rows_per_page: int,
+) -> list[str]:
+    pages: list[str] = []
+    page_count = (len(rows) + rows_per_page - 1) // rows_per_page
+    for page_index in range(page_count):
+        start = page_index * rows_per_page
+        chunk = rows[start : start + rows_per_page]
+        stem = (
+            output_stem
+            if page_count == 1
+            else output_stem.with_name(f"{output_stem.name}_page_{page_index + 1:02d}")
+        )
+        save_binary_zoom_grid(chunk, titles, stem, dpi, ours_columns)
+        pages.append(str(stem))
+    return pages
+
+
 def save_panels(root: Path, sample_id: str, names: list[str], panels: list[np.ndarray]) -> None:
     output = root / f"sample_{int(sample_id):06d}"
     output.mkdir(parents=True, exist_ok=True)
@@ -372,7 +538,23 @@ def main_table_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[s
             name: metrics(mask, target, args.boundary_tolerance) for name, mask in masks.items()
         }
         query = sample.stamp.query or sample.pixellm_query
-        rows.append({"sample_id": sample.candidate.instance_id, "prompt": query, "panels": panels})
+        base_masks = [masks["stamp_base"], masks["text4seg_base"], masks["pixellm_base"]]
+        refined_masks = [
+            masks["stamp_freeref"],
+            masks["text4seg_freeref"],
+            masks["pixellm_freeref"],
+        ]
+        rows.append(
+            {
+                "sample_id": sample.candidate.instance_id,
+                "prompt": query,
+                "panels": panels,
+                "binary_panels": [sample.stamp.image]
+                + [binary_panel(target)]
+                + [binary_panel(masks[name]) for name in panel_names[2:]],
+                "zoom_box": best_zoom_box(target, base_masks, refined_masks),
+            }
+        )
         base_names = ("stamp_base", "text4seg_base", "pixellm_base")
         final_names = ("stamp_freeref", "text4seg_freeref", "pixellm_freeref")
         mean_base_iou = float(np.mean([row_metrics[name]["IoU"] for name in base_names]))
@@ -516,7 +698,22 @@ def postprocess_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[
         row_metrics = {
             name: metrics(mask, target, args.boundary_tolerance) for name, mask in masks.items()
         }
-        rows.append({"sample_id": sample_id, "prompt": view.query, "panels": panels})
+        competitor_names = ("coarse", "densecrf", "guided_filter", "fbs", "slic_average")
+        rows.append(
+            {
+                "sample_id": sample_id,
+                "prompt": view.query,
+                "panels": panels,
+                "binary_panels": [image]
+                + [binary_panel(target)]
+                + [binary_panel(masks[name]) for name in titles[2:]],
+                "zoom_box": best_zoom_box(
+                    target,
+                    [masks[name] for name in competitor_names],
+                    [masks["freeref"] for _ in competitor_names],
+                ),
+            }
+        )
         records.append(
             {
                 "sample_id": sample_id,
@@ -564,6 +761,7 @@ def main() -> int:
     if (
         args.sample_count <= 0
         or args.rows_per_page <= 0
+        or args.zoom_rows_per_page <= 0
         or args.candidate_pool <= 0
         or args.dpi <= 0
         or not 1 <= args.hard_min_improved_models <= 3
@@ -597,14 +795,26 @@ def main() -> int:
         "PixelLM",
         "+FreeRef",
     ]
-    main_pages = save_grid_pages(
-        main_rows,
-        main_titles,
-        args.output_dir / "main_table_qualitative",
-        args.dpi,
-        {3, 5, 7},
-        args.rows_per_page,
-    )
+    main_pages = []
+    if args.render_style in ("overlay", "both"):
+        main_pages = save_grid_pages(
+            main_rows,
+            main_titles,
+            args.output_dir / "main_table_qualitative",
+            args.dpi,
+            {3, 5, 7},
+            args.rows_per_page,
+        )
+    main_binary_zoom_pages = []
+    if args.render_style in ("binary_zoom", "both"):
+        main_binary_zoom_pages = save_binary_zoom_grid_pages(
+            main_rows,
+            main_titles,
+            args.output_dir / "main_table_binary_zoom",
+            args.dpi,
+            {3, 5, 7},
+            args.zoom_rows_per_page,
+        )
     flatten_records(main_records, args.output_dir / "main_table_qualitative_rows.csv")
 
     post_rows, post_records = postprocess_rows(args, refiner)
@@ -618,14 +828,26 @@ def main() -> int:
         "SLIC Avg.",
         "FreeRef",
     ]
-    post_pages = save_grid_pages(
-        post_rows,
-        post_titles,
-        args.output_dir / "postprocess_qualitative",
-        args.dpi,
-        {7},
-        args.rows_per_page,
-    )
+    post_pages = []
+    if args.render_style in ("overlay", "both"):
+        post_pages = save_grid_pages(
+            post_rows,
+            post_titles,
+            args.output_dir / "postprocess_qualitative",
+            args.dpi,
+            {7},
+            args.rows_per_page,
+        )
+    post_binary_zoom_pages = []
+    if args.render_style in ("binary_zoom", "both"):
+        post_binary_zoom_pages = save_binary_zoom_grid_pages(
+            post_rows,
+            post_titles,
+            args.output_dir / "postprocess_binary_zoom",
+            args.dpi,
+            {7},
+            args.zoom_rows_per_page,
+        )
     flatten_records(post_records, args.output_dir / "postprocess_qualitative_rows.csv")
 
     manifest = {
@@ -633,6 +855,8 @@ def main() -> int:
         "postprocess": post_records,
         "main_table_pages": main_pages,
         "postprocess_pages": post_pages,
+        "main_table_binary_zoom_pages": main_binary_zoom_pages,
+        "postprocess_binary_zoom_pages": post_binary_zoom_pages,
         "inputs": {
             "stamp_rows": str(args.stamp_rows),
             "text4seg_rows": str(args.text4seg_rows),
@@ -652,6 +876,8 @@ def main() -> int:
                 "postprocess_samples": [r["sample_id"] for r in post_records],
                 "main_pages": main_pages,
                 "postprocess_pages": post_pages,
+                "main_binary_zoom_pages": main_binary_zoom_pages,
+                "postprocess_binary_zoom_pages": post_binary_zoom_pages,
             },
             indent=2,
         )
