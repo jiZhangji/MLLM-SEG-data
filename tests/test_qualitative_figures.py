@@ -10,6 +10,7 @@ from PIL import Image
 from paper_assets.qualitative_comparison.generate_qualitative_figures import (
     BLUE,
     BLUE_EDGE,
+    hard_recovery_score,
     mask_overlay,
     postprocess_score,
     save_grid,
@@ -43,6 +44,29 @@ class QualitativeFigureTests(unittest.TestCase):
         }
         strong = dict(weak, freeref_iou="0.68", freeref_boundary_iou="0.42")
         self.assertGreater(postprocess_score(strong), postprocess_score(weak))
+
+    def test_hard_recovery_score_prefers_large_successful_recovery(self):
+        modest = [
+            {
+                "base_iou": 0.68,
+                "final_iou": 0.73,
+                "iou_gain": 0.05,
+                "base_boundary_iou": 0.30,
+                "final_boundary_iou": 0.38,
+                "boundary_gain": 0.08,
+            }
+        ] * 3
+        strong = [
+            {
+                "base_iou": 0.58,
+                "final_iou": 0.82,
+                "iou_gain": 0.24,
+                "base_boundary_iou": 0.18,
+                "final_boundary_iou": 0.52,
+                "boundary_gain": 0.34,
+            }
+        ] * 3
+        self.assertGreater(hard_recovery_score(strong), hard_recovery_score(modest))
 
     def test_grid_exports_png_pdf_and_svg(self):
         with TemporaryDirectory() as temporary_directory:

@@ -18,6 +18,7 @@ from scipy.ndimage import binary_dilation, binary_erosion
 from tqdm import tqdm
 
 from paper_assets.intro_figure.generate_intro_motivation_figure import (
+    PairedCandidate,
     canonical_instance_id,
     diverse_samples,
     load_candidate,
@@ -64,6 +65,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-count", type=int, default=4)
     parser.add_argument("--rows-per-page", type=int, default=4)
     parser.add_argument("--candidate-pool", type=int, default=96)
+    parser.add_argument(
+        "--main-selection-mode",
+        choices=("balanced", "hard_recovery"),
+        default="balanced",
+    )
+    parser.add_argument(
+        "--post-selection-mode",
+        choices=("balanced", "hard_recovery"),
+        default="balanced",
+    )
+    parser.add_argument("--hard-max-base-iou", type=float, default=0.78)
+    parser.add_argument("--hard-min-final-iou", type=float, default=0.72)
+    parser.add_argument("--hard-min-iou-gain", type=float, default=0.04)
+    parser.add_argument("--hard-min-improved-models", type=int, default=2)
     parser.add_argument("--main-sample-id", action="append", default=[])
     parser.add_argument("--post-sample-id", action="append", default=[])
     parser.add_argument("--boundary-tolerance", type=int, default=2)
@@ -100,6 +115,87 @@ def metrics(mask: np.ndarray, target: np.ndarray, tolerance: int) -> dict[str, f
         "IoU": iou,
         "bIoU": boundary_iou(mask, target, tolerance),
     }
+
+
+def row_value(row: dict[str, str], key: str, default: float = 0.0) -> float:
+    try:
+        return float(row.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def recovery_values(row: dict[str, str]) -> dict[str, float]:
+    base_iou = row_value(row, "coarse_iou")
+    final_iou = row_value(row, "refined_iou")
+    base_boundary = row_value(row, "coarse_boundary_iou")
+    final_boundary = row_value(row, "refined_boundary_iou")
+    return {
+        "base_iou": base_iou,
+        "final_iou": final_iou,
+        "iou_gain": final_iou - base_iou,
+        "base_boundary_iou": base_boundary,
+        "final_boundary_iou": final_boundary,
+        "boundary_gain": final_boundary - base_boundary,
+    }
+
+
+def hard_recovery_score(values: list[dict[str, float]]) -> float:
+    mean_base = float(np.mean([value["base_iou"] for value in values]))
+    mean_final = float(np.mean([value["final_iou"] for value in values]))
+    mean_gain = float(np.mean([value["iou_gain"] for value in values]))
+    mean_boundary_gain = float(np.mean([value["boundary_gain"] for value in values]))
+    hardness = max(0.0, 0.85 - mean_base)
+    final_quality = max(0.0, mean_final - 0.60)
+    return (
+        3.0 * mean_gain
+        + 2.2 * mean_boundary_gain
+        + 0.8 * hardness
+        + 0.8 * final_quality
+    )
+
+
+def pair_hard_recovery_candidates(
+    stamp_rows: list[dict[str, str]],
+    text_rows: list[dict[str, str]],
+    pixel_rows: list[dict[str, str]],
+    max_base_iou: float,
+    min_final_iou: float,
+    min_iou_gain: float,
+    min_improved_models: int,
+) -> list[PairedCandidate]:
+    sources = []
+    for rows in (stamp_rows, text_rows, pixel_rows):
+        sources.append(
+            {
+                instance_id: row
+                for row in rows
+                if (instance_id := canonical_instance_id(row))
+            }
+        )
+    candidates: list[PairedCandidate] = []
+    for instance_id in sources[0].keys() & sources[1].keys() & sources[2].keys():
+        rows = [source[instance_id] for source in sources]
+        values = [recovery_values(row) for row in rows]
+        mean_base = float(np.mean([value["base_iou"] for value in values]))
+        mean_final = float(np.mean([value["final_iou"] for value in values]))
+        mean_gain = float(np.mean([value["iou_gain"] for value in values]))
+        improved = sum(value["iou_gain"] >= min_iou_gain for value in values)
+        if not 0.02 <= mean_base <= max_base_iou:
+            continue
+        if mean_final < min_final_iou or mean_gain < min_iou_gain:
+            continue
+        if improved < min_improved_models:
+            continue
+        candidates.append(
+            PairedCandidate(
+                instance_id,
+                rows[0],
+                rows[1],
+                rows[2],
+                hard_recovery_score(values),
+            )
+        )
+    return sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
 
 
 def save_grid(
@@ -194,7 +290,18 @@ def main_table_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[s
     stamp_rows = read_csv(args.stamp_rows)
     text_rows = read_csv(args.text4seg_rows)
     pixel_rows = read_csv(args.pixellm_rows)
-    paired = pair_candidates(stamp_rows, text_rows, pixel_rows)
+    if args.main_selection_mode == "hard_recovery":
+        paired = pair_hard_recovery_candidates(
+            stamp_rows,
+            text_rows,
+            pixel_rows,
+            args.hard_max_base_iou,
+            args.hard_min_final_iou,
+            args.hard_min_iou_gain,
+            args.hard_min_improved_models,
+        )
+    else:
+        paired = pair_candidates(stamp_rows, text_rows, pixel_rows)
     requested = normalize_ids(args.main_sample_id)
     if requested:
         by_id = {candidate.instance_id: candidate for candidate in paired}
@@ -266,13 +373,34 @@ def main_table_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[s
         }
         query = sample.stamp.query or sample.pixellm_query
         rows.append({"sample_id": sample.candidate.instance_id, "prompt": query, "panels": panels})
-        record = {"sample_id": sample.candidate.instance_id, "prompt": query, "metrics": row_metrics}
+        base_names = ("stamp_base", "text4seg_base", "pixellm_base")
+        final_names = ("stamp_freeref", "text4seg_freeref", "pixellm_freeref")
+        mean_base_iou = float(np.mean([row_metrics[name]["IoU"] for name in base_names]))
+        mean_final_iou = float(np.mean([row_metrics[name]["IoU"] for name in final_names]))
+        mean_base_boundary = float(
+            np.mean([row_metrics[name]["bIoU"] for name in base_names])
+        )
+        mean_final_boundary = float(
+            np.mean([row_metrics[name]["bIoU"] for name in final_names])
+        )
+        record = {
+            "sample_id": sample.candidate.instance_id,
+            "prompt": query,
+            "selection_score": sample.candidate.score,
+            "mean_base_iou": mean_base_iou,
+            "mean_final_iou": mean_final_iou,
+            "mean_iou_gain": mean_final_iou - mean_base_iou,
+            "mean_base_boundary_iou": mean_base_boundary,
+            "mean_final_boundary_iou": mean_final_boundary,
+            "mean_boundary_gain": mean_final_boundary - mean_base_boundary,
+            "metrics": row_metrics,
+        }
         records.append(record)
         save_panels(args.output_dir / "main_table_panels", sample.candidate.instance_id, panel_names, panels)
     return rows, records
 
 
-def postprocess_score(row: dict[str, str]) -> float:
+def postprocess_score(row: dict[str, str], mode: str = "balanced") -> float:
     competitors = ("densecrf", "guided_filter", "fast_bilateral_solver", "slic_average")
     free_iou = float(row.get("freeref_iou", 0.0))
     free_boundary = float(row.get("freeref_boundary_iou", 0.0))
@@ -282,6 +410,17 @@ def postprocess_score(row: dict[str, str]) -> float:
     base_boundary = float(row.get("base_boundary_iou", 0.0))
     if not 0.01 <= base_iou <= 0.98:
         return -1e9
+    if mode == "hard_recovery":
+        hardness = max(0.0, 0.85 - base_iou)
+        final_quality = max(0.0, free_iou - 0.60)
+        return (
+            3.0 * (free_iou - base_iou)
+            + 2.4 * (free_boundary - base_boundary)
+            + 1.5 * (free_iou - best_iou)
+            + 1.8 * (free_boundary - best_boundary)
+            + 0.8 * hardness
+            + 0.8 * final_quality
+        )
     return 2.0 * (free_boundary - best_boundary) + (free_iou - best_iou) + 0.4 * (
         free_boundary - base_boundary
     ) + 0.2 * (free_iou - base_iou)
@@ -302,9 +441,22 @@ def postprocess_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[
     if requested:
         candidate_ids = requested
     else:
+        eligible_ids = stamp_by_id.keys() & metric_by_id.keys()
+        if args.post_selection_mode == "hard_recovery":
+            eligible_ids = {
+                value
+                for value in eligible_ids
+                if row_value(metric_by_id[value], "base_iou") <= args.hard_max_base_iou
+                and row_value(metric_by_id[value], "freeref_iou") >= args.hard_min_final_iou
+                and row_value(metric_by_id[value], "freeref_iou")
+                - row_value(metric_by_id[value], "base_iou")
+                >= args.hard_min_iou_gain
+            }
         candidate_ids = sorted(
-            stamp_by_id.keys() & metric_by_id.keys(),
-            key=lambda value: postprocess_score(metric_by_id[value]),
+            eligible_ids,
+            key=lambda value: postprocess_score(
+                metric_by_id[value], args.post_selection_mode
+            ),
             reverse=True,
         )
     config = PostprocessBaselineConfig(
@@ -369,7 +521,9 @@ def postprocess_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[
             {
                 "sample_id": sample_id,
                 "prompt": view.query,
-                "selection_score": postprocess_score(metric_by_id.get(sample_id, {})),
+                "selection_score": postprocess_score(
+                    metric_by_id.get(sample_id, {}), args.post_selection_mode
+                ),
                 "metrics": row_metrics,
             }
         )
@@ -384,8 +538,17 @@ def flatten_records(records: list[dict[str, Any]], path: Path) -> None:
             "sample_id": record["sample_id"],
             "prompt": record["prompt"],
         }
-        if "selection_score" in record:
-            row["selection_score"] = record["selection_score"]
+        for key in (
+            "selection_score",
+            "mean_base_iou",
+            "mean_final_iou",
+            "mean_iou_gain",
+            "mean_base_boundary_iou",
+            "mean_final_boundary_iou",
+            "mean_boundary_gain",
+        ):
+            if key in record:
+                row[key] = record[key]
         for method, values in record["metrics"].items():
             row[f"{method}_iou"] = values["IoU"]
             row[f"{method}_boundary_iou"] = values["bIoU"]
@@ -403,9 +566,10 @@ def main() -> int:
         or args.rows_per_page <= 0
         or args.candidate_pool <= 0
         or args.dpi <= 0
+        or not 1 <= args.hard_min_improved_models <= 3
     ):
         raise ValueError(
-            "sample-count, rows-per-page, candidate-pool, and dpi must be positive."
+            "Counts and dpi must be positive; hard-min-improved-models must be 1--3."
         )
     for name in (
         "stamp_rows",

@@ -43,6 +43,12 @@ command=(
   --rows-per-page "${QUALITATIVE_ROWS_PER_PAGE:-4}"
   --candidate-pool "${QUALITATIVE_CANDIDATE_POOL:-96}"
   --dpi "${QUALITATIVE_DPI:-260}"
+  --main-selection-mode "${QUALITATIVE_MAIN_SELECTION_MODE:-balanced}"
+  --post-selection-mode "${QUALITATIVE_POST_SELECTION_MODE:-balanced}"
+  --hard-max-base-iou "${QUALITATIVE_HARD_MAX_BASE_IOU:-0.78}"
+  --hard-min-final-iou "${QUALITATIVE_HARD_MIN_FINAL_IOU:-0.72}"
+  --hard-min-iou-gain "${QUALITATIVE_HARD_MIN_IOU_GAIN:-0.04}"
+  --hard-min-improved-models "${QUALITATIVE_HARD_MIN_IMPROVED_MODELS:-2}"
 )
 
 for sample_id in ${QUALITATIVE_MAIN_SAMPLE_IDS:-}; do

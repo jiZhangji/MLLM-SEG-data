@@ -81,3 +81,22 @@ bash paper_assets/qualitative_comparison/run_qualitative_figures.sh
 
 This produces six main-table pages, six post-processing pages, and all 384
 full-resolution independent panels.
+
+To mine difficult examples that FreeRef recovers especially well, enable the
+hard-recovery ranking. The defaults require mean base IoU at most 0.78, mean
+final IoU at least 0.72, mean IoU gain at least 0.04, and at least two of the
+three main-table models to improve by that amount:
+
+```bash
+QUALITATIVE_MAIN_SELECTION_MODE=hard_recovery \
+QUALITATIVE_POST_SELECTION_MODE=hard_recovery \
+QUALITATIVE_SAMPLE_COUNT=36 \
+QUALITATIVE_ROWS_PER_PAGE=4 \
+QUALITATIVE_CANDIDATE_POOL=512 \
+MLLM_SEG_ROOT="$ROOT" \
+bash paper_assets/qualitative_comparison/run_qualitative_figures.sh
+```
+
+The output CSV records the selection score, mean base/final IoU, mean IoU
+gain, and corresponding boundary-IoU values. These fields make the qualitative
+selection auditable rather than relying on visual preference alone.
