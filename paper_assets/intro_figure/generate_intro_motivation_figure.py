@@ -459,14 +459,15 @@ def prompt_axis(axis: plt.Axes, prompt: str) -> None:
 def row_marker_axis(axis: plt.Axes, marker: str) -> None:
     axis.axis("off")
     axis.text(
-        0.52,
+        0.96,
         0.50,
         marker,
-        ha="center",
+        ha="right",
         va="center",
-        fontsize=10.5,
-        fontweight="bold",
+        fontsize=8.5,
+        fontweight="semibold",
         color=INK,
+        linespacing=1.22,
         transform=axis.transAxes,
     )
 
@@ -767,18 +768,18 @@ def render_figure(
     dpi: int,
 ) -> dict[str, list[tuple[int, int, int, int, float]]]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    figure = plt.figure(figsize=(10.8, 9.0), facecolor=WHITE)
+    figure = plt.figure(figsize=(10.8, 6.45), facecolor=WHITE)
     grid = figure.add_gridspec(
+        3,
         4,
-        4,
-        width_ratios=(0.11, 1.0, 1.0, 1.0),
-        height_ratios=(1.0, 1.0, 1.0, 1.0),
-        left=0.025,
-        right=0.985,
-        bottom=0.035,
-        top=0.975,
-        wspace=0.045,
-        hspace=0.12,
+        width_ratios=(0.34, 1.0, 1.0, 1.0),
+        height_ratios=(1.0, 1.0, 1.0),
+        left=0.018,
+        right=0.992,
+        bottom=0.025,
+        top=0.978,
+        wspace=0.035,
+        hspace=0.055,
     )
     draw_localization_row(figure, grid, sample, threshold)
 
@@ -790,7 +791,7 @@ def render_figure(
         figure,
         grid,
         1,
-        "(a)",
+        "(a) PixelLM\nLearned mask decoder",
         pixellm_image,
         sample.pixellm_probability,
         probability_uncertainty(sample.pixellm_probability),
@@ -800,34 +801,12 @@ def render_figure(
         figure,
         grid,
         2,
-        "(b)",
+        "(b) STAMP\nNative visual mask tokens",
         sample.stamp.image,
         sample.stamp.coarse_probability,
         sample.stamp.uncertainty,
         threshold,
     )
-    cell_records["c"] = draw_output_row(
-        figure,
-        grid,
-        3,
-        "(c)",
-        sample.text4seg.image,
-        sample.text4seg.coarse_probability,
-        sample.text4seg.uncertainty,
-        threshold,
-    )
-
-    upper_bottom = grid[0, 0].get_position(figure).y0
-    lower_top = grid[1, 0].get_position(figure).y1
-    separator_y = 0.5 * (upper_bottom + lower_top)
-    separator = plt.Line2D(
-        [0.035, 0.985],
-        [separator_y, separator_y],
-        transform=figure.transFigure,
-        color=INK,
-        linewidth=0.85,
-    )
-    figure.add_artist(separator)
     for suffix in ("png", "pdf", "svg"):
         figure.savefig(
             output_dir / f"{stem}.{suffix}",

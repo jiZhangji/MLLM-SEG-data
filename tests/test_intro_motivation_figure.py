@@ -312,8 +312,9 @@ class IntroMotivationFigureTests(unittest.TestCase):
             svg = (output_dir / "freeref_intro_motivation.svg").read_text(
                 encoding="utf-8"
             )
-            for method_name in ("PixelLM", "STAMP-7B", "Text4Seg"):
-                self.assertNotIn(method_name, svg)
+            self.assertIn("PixelLM", svg)
+            self.assertIn("STAMP", svg)
+            self.assertNotIn("Text4Seg", svg)
 
 
 if __name__ == "__main__":

@@ -5,11 +5,12 @@ Text4Seg-p24, and PixelLM evaluations and renders a compact introduction figure:
 
 1. The upper row shows the input, a soft localization response, and the box
    enclosing its predicted foreground.
-2. Rows `(a)`, `(b)`, and `(c)` show the same image, the model's coarse mask
-   overlay, and small grid cells over locally uncertain boundary regions.
+2. Rows `(a)` and `(b)` show the same image, the model's coarse mask overlay,
+   and small grid cells over locally uncertain boundary regions.
 3. The paper figure deliberately omits method names and metric text. The rows
-   correspond to PixelLM, STAMP, and Text4Seg, respectively; this mapping and
-   its interpretation belong in the caption or surrounding paragraph.
+   correspond to PixelLM and STAMP, respectively. Text4Seg remains available
+   in the separately exported panel bundle but is omitted from the compact
+   paper composition.
 
 The selector requires all three methods to localize the same target correctly,
 then prefers samples with a large gap between region IoU and boundary IoU. The
@@ -22,11 +23,11 @@ Suggested paper caption:
 
 > MLLMs can identify the referred object but remain limited in local spatial
 > recovery. The upper row illustrates accurate semantic localization. The
-> lower rows show coarse outputs from (a) a learned mask-decoder interface,
-> (b) native visual mask tokens, and (c) textual mask tokens. Red denotes the
+> lower rows show coarse outputs from (a) PixelLM with a learned mask-decoder
+> interface and (b) STAMP with native visual mask tokens. Red denotes the
 > predicted foreground and the overlaid cells denote locally uncertain patches.
-> Method names are stated only in the text: PixelLM, STAMP, and Text4Seg are
-> used as the corresponding representative outputs.
+> The two rows illustrate that accurate target-level localization does not
+> guarantee precise local spatial recovery.
 
 ## Server Usage
 
