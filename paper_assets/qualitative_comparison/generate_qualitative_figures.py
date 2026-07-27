@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 from scipy.ndimage import binary_dilation, binary_erosion
+from tqdm import tqdm
 
 from paper_assets.intro_figure.generate_intro_motivation_figure import (
     canonical_instance_id,
@@ -181,7 +182,9 @@ def main_table_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[s
     loaded = []
     failures = []
     limit = len(paired) if requested else min(len(paired), args.candidate_pool)
-    for candidate in paired[:limit]:
+    for candidate in tqdm(
+        paired[:limit], desc="Loading paired main-table candidates", dynamic_ncols=True
+    ):
         try:
             loaded.append(
                 load_candidate(
@@ -288,7 +291,9 @@ def postprocess_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[
     )
     selected: list[tuple[str, Any]] = []
     seen: set[str] = set()
-    for sample_id in candidate_ids:
+    for sample_id in tqdm(
+        candidate_ids, desc="Selecting post-processing candidates", dynamic_ncols=True
+    ):
         if sample_id not in stamp_by_id:
             if requested:
                 raise ValueError(f"STAMP has no sample ID {sample_id}")
@@ -315,7 +320,9 @@ def postprocess_rows(args: argparse.Namespace, refiner: Any) -> tuple[list[dict[
     ]
     rows: list[dict[str, Any]] = []
     records: list[dict[str, Any]] = []
-    for sample_id, view in selected:
+    for sample_id, view in tqdm(
+        selected, desc="Rendering post-processing methods", dynamic_ncols=True
+    ):
         image = view.image
         target = view.target.astype(bool)
         probability = view.coarse_probability.astype(np.float32)
