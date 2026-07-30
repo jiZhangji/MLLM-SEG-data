@@ -122,3 +122,20 @@ Every run also exports exact single-channel binary masks under
 sample IDs without writing composite figures. Each PNG is mode `L` and contains
 only values 0 and 255; masks are exported directly from the evaluated arrays,
 not reconstructed from visualization overlays.
+
+To build a large candidate library for manual selection without spending time
+or storage on paginated PNG/PDF/SVG composites, use `panels_only`:
+
+```bash
+QUALITATIVE_RENDER_STYLE=panels_only \
+QUALITATIVE_SAMPLE_COUNT=500 \
+QUALITATIVE_CANDIDATE_POOL=1500 \
+QUALITATIVE_SKIP_ARCHIVE=1 \
+MLLM_SEG_ROOT="$ROOT" \
+bash paper_assets/qualitative_comparison/run_qualitative_figures.sh
+```
+
+This mode writes the full-resolution per-method overlay PNGs, exact binary
+masks, metric CSV files, and the JSON manifest. The page lists in the manifest
+remain empty. After reviewing the sample directories, rerun only the selected
+IDs with `binary_zoom` or `both` to create the final paper layout.

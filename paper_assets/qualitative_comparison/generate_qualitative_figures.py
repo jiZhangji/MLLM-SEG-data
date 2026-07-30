@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-pool", type=int, default=96)
     parser.add_argument(
         "--render-style",
-        choices=("overlay", "binary_zoom", "both", "masks_only"),
+        choices=("overlay", "binary_zoom", "both", "panels_only", "masks_only"),
         default="overlay",
     )
     parser.add_argument(

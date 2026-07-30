@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -19,10 +20,32 @@ from paper_assets.qualitative_comparison.generate_qualitative_figures import (
     save_binary_masks,
     save_grid,
     save_grid_pages,
+    parse_args,
 )
 
 
 class QualitativeFigureTests(unittest.TestCase):
+    def test_panels_only_is_a_valid_render_style(self):
+        arguments = [
+            "qualitative",
+            "--stamp-rows",
+            "stamp.csv",
+            "--text4seg-rows",
+            "text4seg.csv",
+            "--pixellm-rows",
+            "pixellm.csv",
+            "--pixellm-manifest",
+            "pixellm.jsonl",
+            "--postprocess-rows",
+            "postprocess.csv",
+            "--output-dir",
+            "output",
+            "--render-style",
+            "panels_only",
+        ]
+        with patch("sys.argv", arguments):
+            self.assertEqual(parse_args().render_style, "panels_only")
+
     def test_overlay_uses_shared_blue_prediction_color(self):
         image = np.full((48, 64, 3), 180, dtype=np.uint8)
         mask = np.zeros((48, 64), dtype=bool)
