@@ -28,6 +28,8 @@ class InterventionConcentrationTests(unittest.TestCase):
             confidence[0]["mean_abs_probability_change"],
             confidence[-1]["mean_abs_probability_change"],
         )
+        self.assertLess(summary["base_metrics"]["mIoU"], summary["freeref_metrics"]["mIoU"])
+        self.assertLess(summary["base_metrics"]["cIoU"], summary["freeref_metrics"]["cIoU"])
 
     def test_gt_boundary_concentration_reports_share_and_enrichment(self):
         target = np.zeros((80, 80), dtype=bool)

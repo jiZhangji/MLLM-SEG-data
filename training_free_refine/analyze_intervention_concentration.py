@@ -15,6 +15,7 @@ import numpy as np
 from scipy.ndimage import binary_dilation, binary_erosion, distance_transform_edt
 from tqdm import tqdm
 
+from .eval_stamp_dumps import boundary_iou, mask_iou
 from .visualize_comparison import (
     add_refiner_arguments,
     build_refiner,
@@ -86,9 +87,15 @@ class BinnedAccumulator:
 
 
 class InterventionAccumulator:
-    def __init__(self, threshold: float, boundary_radii: tuple[int, ...]) -> None:
+    def __init__(
+        self,
+        threshold: float,
+        boundary_radii: tuple[int, ...],
+        boundary_tolerance: int = 2,
+    ) -> None:
         self.threshold = threshold
         self.boundary_radii = boundary_radii
+        self.boundary_tolerance = boundary_tolerance
         self.confidence = BinnedAccumulator(
             CONFIDENCE_EDGES,
             interval_labels(CONFIDENCE_EDGES),
@@ -102,6 +109,14 @@ class InterventionAccumulator:
         self.total_flips = 0
         self.total_abs_change = 0.0
         self.total_abs_change_mass = 0.0
+        self.base_iou_sum = 0.0
+        self.freeref_iou_sum = 0.0
+        self.base_intersection = 0
+        self.base_union = 0
+        self.freeref_intersection = 0
+        self.freeref_union = 0
+        self.base_boundary_iou_sum = 0.0
+        self.freeref_boundary_iou_sum = 0.0
         self.boundary_band_pixels = {radius: 0 for radius in boundary_radii}
         self.flips_in_boundary_band = {radius: 0 for radius in boundary_radii}
         self.abs_change_in_boundary_band = {radius: 0.0 for radius in boundary_radii}
@@ -111,7 +126,7 @@ class InterventionAccumulator:
         coarse_probability: np.ndarray,
         refined_probability: np.ndarray,
         target: np.ndarray,
-    ) -> None:
+    ) -> dict[str, Any]:
         coarse = np.asarray(coarse_probability, dtype=np.float64)
         refined = np.asarray(refined_probability, dtype=np.float64)
         target_mask = np.asarray(target, dtype=bool)
@@ -127,6 +142,16 @@ class InterventionAccumulator:
         refined_mask = refined >= self.threshold
         flips = coarse_mask != refined_mask
         confidence = np.abs(2.0 * coarse - 1.0)
+        base_iou, base_intersection, base_union = mask_iou(coarse_mask, target_mask)
+        freeref_iou, freeref_intersection, freeref_union = mask_iou(
+            refined_mask, target_mask
+        )
+        base_boundary_iou = boundary_iou(
+            coarse_mask, target_mask, self.boundary_tolerance
+        )
+        freeref_boundary_iou = boundary_iou(
+            refined_mask, target_mask, self.boundary_tolerance
+        )
 
         coarse_boundary = np.logical_xor(coarse_mask, binary_erosion(coarse_mask))
         if coarse_boundary.any():
@@ -141,6 +166,14 @@ class InterventionAccumulator:
         self.total_flips += int(flips.sum())
         self.total_abs_change += float(abs_change.sum())
         self.total_abs_change_mass += float(abs_change.sum())
+        self.base_iou_sum += base_iou
+        self.freeref_iou_sum += freeref_iou
+        self.base_intersection += base_intersection
+        self.base_union += base_union
+        self.freeref_intersection += freeref_intersection
+        self.freeref_union += freeref_union
+        self.base_boundary_iou_sum += base_boundary_iou
+        self.freeref_boundary_iou_sum += freeref_boundary_iou
 
         gt_boundary = np.logical_xor(target_mask, binary_erosion(target_mask))
         for radius in self.boundary_radii:
@@ -148,6 +181,16 @@ class InterventionAccumulator:
             self.boundary_band_pixels[radius] += int(band.sum())
             self.flips_in_boundary_band[radius] += int(np.logical_and(flips, band).sum())
             self.abs_change_in_boundary_band[radius] += float(abs_change[band].sum())
+        return {
+            "base_iou": base_iou,
+            "freeref_iou": freeref_iou,
+            "iou_delta": freeref_iou - base_iou,
+            "base_boundary_iou": base_boundary_iou,
+            "freeref_boundary_iou": freeref_boundary_iou,
+            "boundary_iou_delta": freeref_boundary_iou - base_boundary_iou,
+            "mean_abs_probability_change": float(abs_change.mean()),
+            "label_flip_rate": float(flips.mean()),
+        }
 
     def boundary_rows(self) -> list[dict[str, Any]]:
         rows = []
@@ -176,12 +219,34 @@ class InterventionAccumulator:
     def summary(self) -> dict[str, Any]:
         confidence_rows = self.confidence.rows("base_confidence")
         distance_rows = self.distance.rows("distance_to_coarse_boundary")
+        base_miou = self.base_iou_sum / max(self.samples, 1)
+        freeref_miou = self.freeref_iou_sum / max(self.samples, 1)
+        base_ciou = self.base_intersection / max(self.base_union, 1)
+        freeref_ciou = self.freeref_intersection / max(self.freeref_union, 1)
+        base_boundary_iou = self.base_boundary_iou_sum / max(self.samples, 1)
+        freeref_boundary_iou = self.freeref_boundary_iou_sum / max(self.samples, 1)
         return {
             "samples": self.samples,
             "total_pixels": self.total_pixels,
             "changed_pixels": self.total_flips,
             "overall_label_flip_rate": self.total_flips / max(self.total_pixels, 1),
             "overall_mean_abs_probability_change": self.total_abs_change / max(self.total_pixels, 1),
+            "base_metrics": {
+                "mIoU": base_miou,
+                "cIoU": base_ciou,
+                "boundary_iou": base_boundary_iou,
+            },
+            "freeref_metrics": {
+                "mIoU": freeref_miou,
+                "cIoU": freeref_ciou,
+                "boundary_iou": freeref_boundary_iou,
+            },
+            "metric_deltas": {
+                "mIoU": freeref_miou - base_miou,
+                "cIoU": freeref_ciou - base_ciou,
+                "boundary_iou": freeref_boundary_iou - base_boundary_iou,
+            },
+            "boundary_tolerance_pixels": self.boundary_tolerance,
             "confidence_bins": confidence_rows,
             "distance_bins": distance_rows,
             "gt_boundary_concentration": self.boundary_rows(),
@@ -267,7 +332,11 @@ def plot_summary(summary: dict[str, Any], output_dir: Path, label: str, dpi: int
     axes[1, 2].grid(alpha=0.25)
 
     figure.suptitle(
-        f"{label}: semantic preservation and intervention concentration (N={summary['samples']})",
+        f"{label}: semantic preservation and intervention concentration (N={summary['samples']})\n"
+        f"mIoU {100 * summary['base_metrics']['mIoU']:.2f} -> "
+        f"{100 * summary['freeref_metrics']['mIoU']:.2f} | "
+        f"cIoU {100 * summary['base_metrics']['cIoU']:.2f} -> "
+        f"{100 * summary['freeref_metrics']['cIoU']:.2f}",
         fontsize=15,
         fontweight="bold",
     )
@@ -284,6 +353,23 @@ def markdown_report(summary: dict[str, Any], label: str, kind: str) -> str:
         f"- Overall mean |p_refined - p_base|: {summary['overall_mean_abs_probability_change']:.6f}",
         f"- Overall binary label flip rate: {100 * summary['overall_label_flip_rate']:.4f}%",
         f"- Input kind: {kind}",
+        "",
+        "## Segmentation results before and after FreeRef",
+        "",
+        f"Boundary IoU below uses a tolerance of {summary['boundary_tolerance_pixels']} pixels.",
+        "",
+        "| Metric | Base | Base + FreeRef | Delta |",
+        "|---|---:|---:|---:|",
+        f"| mIoU | {100 * summary['base_metrics']['mIoU']:.2f} | "
+        f"{100 * summary['freeref_metrics']['mIoU']:.2f} | "
+        f"{100 * summary['metric_deltas']['mIoU']:+.2f} |",
+        f"| cIoU | {100 * summary['base_metrics']['cIoU']:.2f} | "
+        f"{100 * summary['freeref_metrics']['cIoU']:.2f} | "
+        f"{100 * summary['metric_deltas']['cIoU']:+.2f} |",
+        f"| Boundary IoU ({summary['boundary_tolerance_pixels']} px) | "
+        f"{100 * summary['base_metrics']['boundary_iou']:.2f} | "
+        f"{100 * summary['freeref_metrics']['boundary_iou']:.2f} | "
+        f"{100 * summary['metric_deltas']['boundary_iou']:+.2f} |",
         "",
     ]
     if kind == "text4seg":
@@ -348,7 +434,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--label", required=True)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--selection",
+        choices=("first", "random"),
+        default="random",
+        help="How to choose samples when --limit is smaller than the dataset.",
+    )
+    parser.add_argument("--sample-seed", type=int, default=2027)
     parser.add_argument("--boundary-sigma", type=float, default=8.0)
+    parser.add_argument("--boundary-tolerance", type=int, default=2)
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--max-errors", type=int, default=20)
     add_refiner_arguments(parser)
@@ -357,8 +451,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    if args.limit < 0 or args.dpi <= 0 or args.max_errors < 0:
-        raise ValueError("limit/max-errors must be non-negative and dpi must be positive")
+    if (
+        args.limit < 0
+        or args.boundary_tolerance < 0
+        or args.dpi <= 0
+        or args.max_errors < 0
+    ):
+        raise ValueError(
+            "limit/boundary-tolerance/max-errors must be non-negative and dpi must be positive"
+        )
     args.rows = args.rows.expanduser().resolve()
     args.output_dir = args.output_dir.expanduser().resolve()
     if not args.rows.is_file():
@@ -366,12 +467,29 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = read_csv(args.rows)
-    if args.limit:
-        rows = rows[: args.limit]
+    indexed_rows = list(enumerate(rows))
+    if args.limit and args.limit < len(indexed_rows):
+        if args.selection == "random":
+            generator = np.random.default_rng(args.sample_seed)
+            selected_indices = sorted(
+                generator.choice(len(indexed_rows), size=args.limit, replace=False).tolist()
+            )
+            indexed_rows = [indexed_rows[index] for index in selected_indices]
+        else:
+            indexed_rows = indexed_rows[: args.limit]
+    rows = [row for _, row in indexed_rows]
     refiner = build_refiner(args)
-    accumulator = InterventionAccumulator(args.threshold, GT_BOUNDARY_RADII)
+    accumulator = InterventionAccumulator(
+        args.threshold,
+        GT_BOUNDARY_RADII,
+        boundary_tolerance=args.boundary_tolerance,
+    )
     failures = []
-    for row in tqdm(rows, desc=f"{args.label} concentration", dynamic_ncols=True):
+    sample_metrics = []
+    selected_samples = []
+    for (source_index, row) in tqdm(
+        indexed_rows, desc=f"{args.label} concentration", dynamic_ncols=True
+    ):
         try:
             view = load_view(
                 args.kind,
@@ -381,10 +499,24 @@ def main() -> int:
                 refiner,
                 args.boundary_sigma,
             )
-            accumulator.update(
+            metrics = accumulator.update(
                 view.coarse_probability,
                 view.refined_probability,
                 view.target,
+            )
+            sample_metrics.append(
+                {
+                    "source_row_index": source_index,
+                    "name": view.name,
+                    **metrics,
+                }
+            )
+            selected_samples.append(
+                {
+                    "source_row_index": source_index,
+                    "name": view.name,
+                    "query": view.query,
+                }
             )
         except Exception as error:
             failures.append({"name": row.get("name", ""), "error": str(error)})
@@ -400,6 +532,8 @@ def main() -> int:
             "kind": args.kind,
             "source_rows": str(args.rows),
             "threshold": args.threshold,
+            "selection": args.selection,
+            "sample_seed": args.sample_seed,
             "failures": failures,
         }
     )
@@ -412,6 +546,8 @@ def main() -> int:
         args.output_dir / "gt_boundary_concentration.csv",
         summary["gt_boundary_concentration"],
     )
+    write_csv(args.output_dir / "sample_metrics.csv", sample_metrics)
+    write_csv(args.output_dir / "selected_samples.csv", selected_samples)
     (args.output_dir / "intervention_concentration.md").write_text(
         markdown_report(summary, args.label, args.kind), encoding="utf-8"
     )

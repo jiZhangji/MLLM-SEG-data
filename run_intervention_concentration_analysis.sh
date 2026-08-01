@@ -6,7 +6,8 @@ REPO="${INTERVENTION_REPO:-${ROOT}/MLLM-SEG-data}"
 STAMP_ENV="${STAMP_ENV_PATH:-/inspire/hdd/global_user/liuxiaotong-253108540242/yanggang/my_global_cache/conda/envs/STAMP}"
 PYTHON="${INTERVENTION_PYTHON:-${STAMP_ENV}/bin/python}"
 OUTPUT="${INTERVENTION_OUTPUT:-${ROOT}/outputs/freeref_intervention_concentration}"
-LIMIT="${INTERVENTION_LIMIT:-0}"
+LIMIT="${INTERVENTION_LIMIT:-500}"
+SAMPLE_SEED="${INTERVENTION_SAMPLE_SEED:-2027}"
 RUN_TEXT4SEG="${INTERVENTION_RUN_TEXT4SEG:-1}"
 
 STAMP_ROWS="${INTERVENTION_STAMP_ROWS:-${ROOT}/outputs/training_free_refine_stamp7b_refcocog_val_full/eval_rows.csv}"
@@ -40,6 +41,9 @@ run_one() {
     --output-dir "${output}" \
     --label "${label}" \
     --limit "${LIMIT}" \
+    --selection random \
+    --sample-seed "${SAMPLE_SEED}" \
+    --boundary-tolerance 2 \
     --n-segments 1024 \
     --graph-lambda 1.0 \
     --confidence-power 2.0 \
