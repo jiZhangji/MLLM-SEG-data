@@ -14,6 +14,7 @@ import hashlib
 import os
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -368,6 +369,53 @@ def remote_path(prefix: str, relative: Path) -> str:
     return f"{prefix}/{value}" if prefix else value
 
 
+def list_remote_file_paths(api, args: argparse.Namespace) -> set[str]:
+    remote_items = api.list_repo_files(args.repo_id, args.repo_type, recursive=True)
+    return {
+        item if isinstance(item, str) else item.path
+        for item in remote_items
+        if isinstance(item, str) or getattr(item, "type", "blob") != "tree"
+    }
+
+
+def retry_missing_files(
+    api,
+    args: argparse.Namespace,
+    stage: Path,
+    expected_to_local: dict[str, Path],
+    missing: list[str],
+    attempt: int,
+) -> None:
+    retry_stage = stage.parent / f".{stage.name}_missing_retry"
+    if retry_stage.exists():
+        shutil.rmtree(retry_stage)
+    retry_stage.mkdir(parents=True)
+    try:
+        for remote_name in missing:
+            source = expected_to_local[remote_name]
+            relative = source.relative_to(stage)
+            destination = retry_stage / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+        print(
+            f"Missing-file retry {attempt}: uploading {len(missing)} files "
+            "with cache disabled.",
+            flush=True,
+        )
+        api.upload_folder(
+            args.repo_id,
+            args.repo_type,
+            retry_stage,
+            path_in_repo=args.path_in_repo.strip("/"),
+            commit_message=f"Retry missing FreeRef artifacts (attempt {attempt})",
+            max_workers=min(args.max_workers, 4),
+            use_cache=False,
+        )
+    finally:
+        if retry_stage.exists():
+            shutil.rmtree(retry_stage)
+
+
 def upload_and_verify(args: argparse.Namespace, stage: Path, files: list[Path]) -> None:
     try:
         from modelscope_hub import HubApi
@@ -394,22 +442,38 @@ def upload_and_verify(args: argparse.Namespace, stage: Path, files: list[Path]) 
         use_cache=True,
     )
 
-    remote_items = api.list_repo_files(args.repo_id, args.repo_type, recursive=True)
-    remote_files = {
-        item if isinstance(item, str) else item.path
-        for item in remote_items
-        if isinstance(item, str) or getattr(item, "type", "blob") != "tree"
+    expected_to_local = {
+        remote_path(args.path_in_repo, path.relative_to(stage)): path for path in files
     }
-    expected = {
-        remote_path(args.path_in_repo, path.relative_to(stage)) for path in files
-    }
-    missing = sorted(expected - remote_files)
-    if missing:
-        raise RuntimeError(
-            f"Upload returned successfully but {len(missing)} files are missing; "
-            f"first entries: {missing[:5]}"
+    expected = set(expected_to_local)
+    missing: list[str] = []
+    for attempt in range(1, 5):
+        if attempt == 1:
+            print("Waiting for the remote file index to refresh...", flush=True)
+            time.sleep(15)
+        remote_files = list_remote_file_paths(api, args)
+        missing = sorted(expected - remote_files)
+        if not missing:
+            print(
+                f"Remote verification passed: {len(expected)} files are present.",
+                flush=True,
+            )
+            return
+        print(
+            f"Remote verification attempt {attempt}: {len(missing)} files missing; "
+            f"first entries: {missing[:5]}",
+            flush=True,
         )
-    print(f"Remote verification passed: {len(expected)} files are present.", flush=True)
+        if attempt < 4:
+            retry_missing_files(
+                api, args, stage, expected_to_local, missing, attempt
+            )
+            time.sleep(10)
+
+    raise RuntimeError(
+        f"Remote verification still reports {len(missing)} missing files after "
+        f"three retries; first entries: {missing[:5]}"
+    )
 
 
 def main() -> int:
