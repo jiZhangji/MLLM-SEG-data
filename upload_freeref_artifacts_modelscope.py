@@ -24,6 +24,9 @@ DEFAULT_ROOT = Path(
 DEFAULT_REPO_ID = "shimian123/FreeRef"
 MAX_MODELSCOPE_FILES = 100_000
 MAX_MODELSCOPE_FILE_BYTES = 100 * 1024**3
+MAX_COMPACT_FILES = 90_000
+MAX_FILES_PER_OUTPUT = 500
+MAX_FILES_FOR_ASSET_OUTPUT = 5_000
 
 OUTPUT_PATTERNS = (
     "freeref_final_h100_overnight_v2",
@@ -79,6 +82,40 @@ SKIPPED_PARTS = {
 }
 
 MASK_ARCHIVE_DIR = "freeref_all_three_exact_binary_masks"
+ASSET_OUTPUTS = {
+    MASK_ARCHIVE_DIR,
+    "framework_figure_real",
+    "freeref_intro_final_staff_shirt",
+}
+SKIPPED_DIR_MARKERS = (
+    "cache",
+    "checkpoint",
+    "dump",
+    "mask",
+    "panel",
+    "prediction",
+    "probabilit",
+    "worker",
+)
+SUMMARY_TOKENS = (
+    "complete",
+    "config",
+    "concentration",
+    "efficiency",
+    "figure",
+    "index",
+    "manifest",
+    "metric",
+    "plot",
+    "readme",
+    "report",
+    "result",
+    "status",
+    "summary",
+    "table",
+)
+DIRECT_SUMMARY_SUFFIXES = {".csv", ".md", ".pdf", ".svg", ".tsv", ".yaml", ".yml"}
+CONDITIONAL_SUFFIXES = {".json", ".jsonl", ".jpeg", ".jpg", ".png", ".txt"}
 
 
 @dataclass(frozen=True)
@@ -111,7 +148,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--stage-dir",
         type=Path,
-        help="Defaults to ROOT/modelscope_stage/freeref_artifacts.",
+        help="Defaults to ROOT/modelscope_stage/freeref_artifacts_compact_v2.",
     )
     parser.add_argument(
         "--reuse-stage",
@@ -156,6 +193,17 @@ def should_stage(source_root: Path, path: Path, max_bytes: int) -> tuple[bool, s
         return False, "skipped-directory"
     if path.suffix.lower() not in ALLOWED_SUFFIXES:
         return False, "unsupported-extension"
+    suffix = path.suffix.lower()
+    if source_root.name not in ASSET_OUTPUTS:
+        name = path.name.lower()
+        if suffix not in DIRECT_SUMMARY_SUFFIXES and not (
+            suffix in CONDITIONAL_SUFFIXES
+            and (
+                any(token in name for token in SUMMARY_TOKENS)
+                or (suffix in {".jpeg", ".jpg", ".png"} and len(relative.parts) <= 2)
+            )
+        ):
+            return False, "non-summary-artifact"
     size = path.stat().st_size
     if size > max_bytes:
         return False, "over-size-limit"
@@ -171,6 +219,7 @@ def safe_reset_stage(root: Path, stage: Path) -> None:
             f"Refusing to reset stage outside {allowed_parent}: {stage}"
         )
     if stage.exists():
+        print(f"Removing previous staging tree: {stage}", flush=True)
         shutil.rmtree(stage)
     stage.mkdir(parents=True, exist_ok=True)
 
@@ -223,18 +272,58 @@ def build_stage(root: Path, stage: Path, max_bytes: int) -> list[Path]:
     for source_root in selected_dirs:
         before = len(staged)
         print(f"Scanning: {source_root.name}", flush=True)
-        skipped_parts = SKIPPED_PARTS
-        if source_root.name == MASK_ARCHIVE_DIR:
-            skipped_parts = SKIPPED_PARTS - {"masks"}
+        candidates: list[Path] = []
+        inspected = 0
         for current, dirnames, filenames in os.walk(source_root):
-            dirnames[:] = [name for name in dirnames if name not in skipped_parts]
+            if source_root.name not in ASSET_OUTPUTS:
+                dirnames[:] = [
+                    name
+                    for name in dirnames
+                    if name not in SKIPPED_PARTS
+                    and not any(marker in name.lower() for marker in SKIPPED_DIR_MARKERS)
+                    and name.lower() != "samples"
+                    and not name.lower().startswith("sample_")
+                ]
             current_path = Path(current)
             for filename in filenames:
+                inspected += 1
+                if inspected % 50_000 == 0:
+                    print(
+                        f"  inspected {inspected:,} files; "
+                        f"selected {len(candidates):,}",
+                        flush=True,
+                    )
                 source = current_path / filename
                 keep, reason = should_stage(source_root, source, max_bytes)
                 if not keep:
                     skipped_counts[reason] = skipped_counts.get(reason, 0) + 1
                     continue
+                candidates.append(source)
+
+        candidates.sort(
+            key=lambda path: (
+                0
+                if any(token in path.name.lower() for token in SUMMARY_TOKENS)
+                else 1,
+                len(path.relative_to(source_root).parts),
+                path.relative_to(source_root).as_posix(),
+            )
+        )
+        source_limit = (
+            MAX_FILES_FOR_ASSET_OUTPUT
+            if source_root.name in ASSET_OUTPUTS
+            else MAX_FILES_PER_OUTPUT
+        )
+        source_limit = min(source_limit, max(0, MAX_COMPACT_FILES - len(staged)))
+        if len(candidates) > source_limit:
+            skipped_counts["per-output-file-cap"] = (
+                skipped_counts.get("per-output-file-cap", 0)
+                + len(candidates)
+                - source_limit
+            )
+            candidates = candidates[:source_limit]
+
+        for source in candidates:
                 relative = source.relative_to(source_root)
                 destination = stage / "results" / source_root.name / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -333,7 +422,7 @@ def main() -> int:
     stage = (
         args.stage_dir.expanduser().resolve()
         if args.stage_dir
-        else (root / "modelscope_stage" / "freeref_artifacts").resolve()
+        else (root / "modelscope_stage" / "freeref_artifacts_compact_v2").resolve()
     )
 
     if args.reuse_stage:
